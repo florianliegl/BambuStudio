@@ -1531,6 +1531,7 @@ void GCodeProcessorResult::reset() {
     settings_ids.reset();
     extruders_count = 0;
     extruder_colors = std::vector<std::string>();
+    filament_types.clear();
     filament_diameters = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DIAMETER);
     filament_densities = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DENSITY);
     custom_gcode_per_print_z = std::vector<CustomGCode::Item>();
@@ -1567,6 +1568,7 @@ void GCodeProcessorResult::reset() {
     settings_ids.reset();
     filaments_count = 0;
     extruder_colors = std::vector<std::string>();
+    filament_types.clear();
     filament_diameters = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DIAMETER);
     required_nozzle_HRC = std::vector<int>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_HRC);
     filament_densities = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DENSITY);
@@ -2791,10 +2793,12 @@ void GCodeProcessor::finalize(bool post_process)
         m_result.pause_printing.push_back(pause_info);
     }
 
+    m_result.filament_types = m_filament_types;
     //update times for results
     for (size_t i = 0; i < m_result.moves.size(); i++) {
         //field layer_duration contains the layer id for the move in which the layer_duration has to be set.
         size_t layer_id = size_t(m_result.moves[i].layer_duration);
+        m_result.moves[i].layer_id = static_cast<unsigned int>(layer_id);
         if (layer_times.size() > layer_id - 1 && layer_id > 0)
             m_result.moves[i].layer_duration = layer_id == 1 ? std::max(0.f,layer_times[layer_id - 1] - prepare_time) : layer_times[layer_id - 1];
         else

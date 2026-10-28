@@ -1,0 +1,28 @@
+name: Extended AMS Lite planner
+on:
+  push:
+    paths:
+      - 'src/libslic3r/ExtendedAMSLite/**'
+      - 'tests/extended_ams_lite/**'
+      - '.github/workflows/extended-ams-lite.yml'
+  pull_request:
+    paths:
+      - 'src/libslic3r/ExtendedAMSLite/**'
+      - 'tests/extended_ams_lite/**'
+      - '.github/workflows/extended-ams-lite.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  planner:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S tests/extended_ams_lite -B build/extended-ams-lite -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build/extended-ams-lite --config Release
+      - run: ctest --test-dir build/extended-ams-lite -C Release --output-on-failure

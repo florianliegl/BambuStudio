@@ -1,0 +1,40 @@
+Extended AMS Lite Mode - DRY RUN
+Simulation only. Automatic printing is unavailable: A1 AMS Lite spool replacement, mapping changes during a paused print, safe unload/reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.
+
+Virtual filaments: 8; physical slots: 4; filament runs: 18; planned stops: 7
+
+Initial loading
+Slot 1: V1 Black [PLA, #202020]
+Slot 2: V2 Blue [PLA, #2463EB]
+Slot 3: V3 Red [PLA, #E34B4B]
+Slot 4: V4 White [PLA, #F5F5F5]
+
+Chronological swap schedule (positions are before filament selection, not executable pause points)
+
+Stop 1 of 7; Layer 42; move 400; G-code line ID 481
+Slot 4: remove V4 White [PLA, #F5F5F5] -> insert V5 Green [PLA, #22A86A]
+Next required: V5 Green [PLA, #22A86A]
+
+Stop 2 of 7; Layer 42; move 600; G-code line ID 721
+Slot 4: remove V5 Green [PLA, #22A86A] -> insert V6 Yellow [PLA, #F2C438]
+Next required: V6 Yellow [PLA, #F2C438]
+
+Stop 3 of 7; Layer 42; move 800; G-code line ID 961
+Slot 4: remove V6 Yellow [PLA, #F2C438] -> insert V7 Purple [PLA, #9755CE]
+Next required: V7 Purple [PLA, #9755CE]
+
+Stop 4 of 7; Layer 43; move 1000; G-code line ID 1201
+Slot 1: remove V1 Black [PLA, #202020] -> insert V8 Orange [PLA, #ED8736]
+Next required: V8 Orange [PLA, #ED8736]
+
+Stop 5 of 7; Layer 43; move 1300; G-code line ID 1561
+Slot 2: remove V2 Blue [PLA, #2463EB] -> insert V4 White [PLA, #F5F5F5]
+Next required: V4 White [PLA, #F5F5F5]
+
+Stop 6 of 7; Layer 43; move 1400; G-code line ID 1681
+Slot 2: remove V4 White [PLA, #F5F5F5] -> insert V5 Green [PLA, #22A86A]
+Next required: V5 Green [PLA, #22A86A]
+
+Stop 7 of 7; Layer 43; move 1500; G-code line ID 1801
+Slot 2: remove V5 Green [PLA, #22A86A] -> insert V6 Yellow [PLA, #F2C438]
+Next required: V6 Yellow [PLA, #F2C438]

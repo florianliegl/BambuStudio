@@ -227,6 +227,8 @@ namespace Slic3r {
             int  object_label_id{-1};
             float print_z{0.0f};
             bool is_pa_line_calibration{false};
+            // Preserve the actual layer index after layer_duration becomes seconds.
+            unsigned int layer_id{0};
 
             float volumetric_rate() const { return feedrate * mm3_per_mm; }
             //BBS: new function to support arc move
@@ -285,6 +287,7 @@ namespace Slic3r {
         SettingsIds settings_ids;
         size_t filaments_count;
         std::vector<std::string> extruder_colors;
+        std::vector<std::string> filament_types; // sliced metadata for the dry-run swap planner
         std::vector<std::string> printer_extruder_variant;  // 用于帮助访问喷嘴参数
         std::vector<ExtruderType> extruder_types;
         std::vector<int> printer_extruder_id;
@@ -346,6 +349,7 @@ namespace Slic3r {
             settings_ids = other.settings_ids;
             filaments_count = other.filaments_count;
             extruder_colors = other.extruder_colors;
+            filament_types = other.filament_types;
             filament_diameters = other.filament_diameters;
             filament_densities = other.filament_densities;
             filament_costs = other.filament_costs;

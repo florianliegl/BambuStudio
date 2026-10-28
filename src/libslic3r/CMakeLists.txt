@@ -28,6 +28,8 @@ if (TARGET OpenVDB::openvdb)
 endif()
 
 set(lisbslic3r_sources
+    ExtendedAMSLite/Planner.cpp
+    ExtendedAMSLite/Planner.hpp
     ArcFitter.cpp
     ArcFitter.hpp
     pchheader.cpp

@@ -221,6 +221,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/GUI_Init.cpp
     GUI/GUI_Init.hpp
     GUI/GUI_Preview.cpp
+    GUI/ExtendedAMSLiteDialog.cpp
+    GUI/ExtendedAMSLiteDialog.hpp
     GUI/GUI_Preview.hpp
     GUI/GUI_App.cpp
     GUI/GUI_App.hpp

@@ -4,6 +4,7 @@
 #include "IMSlider.hpp"
 #include "IMSlider_Utils.hpp"
 #include "GUI_Preview.hpp"
+#include "ExtendedAMSLiteDialog.hpp"
 #include "GUI_App.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
@@ -27,6 +28,8 @@
 #include <wx/combo.h>
 #include <wx/combobox.h>
 #include <wx/checkbox.h>
+#include <wx/button.h>
+#include <wx/msgdlg.h>
 
 // this include must follow the wxWidgets ones or it won't compile on Windows -> see http://trac.wxwidgets.org/ticket/2421
 #include "libslic3r/Print.hpp"
@@ -307,6 +310,27 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
     m_canvas_widget->Bind(wxEVT_KEY_DOWN, &Preview::update_layers_slider_from_canvas, this);
 
     wxBoxSizer *main_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* ams_row = new wxBoxSizer(wxHORIZONTAL);
+    auto* extended_ams = new wxCheckBox(this, wxID_ANY, _L("Extended AMS Lite Mode (dry run)"));
+    auto* swaps = new wxButton(this, wxID_ANY, _L("View swap schedule..."));
+    swaps->Disable();
+    ams_row->Add(extended_ams, 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    ams_row->Add(swaps, 0, wxALL, 5);
+    main_sizer->Add(ams_row, 0, wxEXPAND);
+    extended_ams->Bind(wxEVT_CHECKBOX, [extended_ams, swaps](wxCommandEvent&) { swaps->Enable(extended_ams->GetValue()); });
+    swaps->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (!m_gcode_result || m_gcode_result->moves.empty() ||
+            (!m_only_gcode && !wxGetApp().plater()->get_partplate_list().get_curr_plate()->is_slice_result_valid())) {
+            wxMessageBox(_L("Slice the current plate before calculating a swap schedule."), _L("Extended AMS Lite Mode"), wxOK | wxICON_INFORMATION, this);
+            return;
+        }
+        try {
+            ExtendedAMSLiteDialog dialog(this, *m_gcode_result);
+            dialog.ShowModal();
+        } catch (const std::exception& error) {
+            wxMessageBox(wxString::FromUTF8(error.what()), _L("Extended AMS Lite Mode"), wxOK | wxICON_ERROR, this);
+        }
+    });
     main_sizer->Add(m_canvas_widget, 1, wxALL | wxEXPAND, 0);
 
     SetSizer(main_sizer);
