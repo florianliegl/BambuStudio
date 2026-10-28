@@ -45,6 +45,39 @@ struct Plan {
     std::vector<Stop> stops;
 };
 
+struct LayerOrder {
+    unsigned int layer = 0;
+    std::vector<int> filaments; // zero based, each required identity once
+};
+
+struct BatchPlan {
+    Plan schedule;
+    std::vector<Request> requests;
+    std::vector<int> filament_slots; // fixed for the whole job; -1 if unused
+    std::vector<std::vector<int>> banks;
+    std::vector<LayerOrder> layers;
+    std::size_t spool_replacements = 0;
+    std::size_t color_changes = 0; // excludes the initial selection
+    bool reordered = false; // positions require a new slice when true
+};
+
+// Minimize visits rather than individual replacements. Each stop prepares the
+// longest upcoming sequence with no conflicting identities in a physical slot.
+// Unlike the cache optimizer, a virtual identity keeps one slot for the job.
+// Optional layer reordering is a proposal for Studio's existing sequence API;
+// it never edits or reorders already generated G-code.
+BatchPlan plan_batches(const std::vector<Request>& requests, std::size_t filament_count,
+                       const std::vector<Slot>& slots,
+                       const std::vector<int>& first_layer_order = {},
+                       bool reorder_layers = false);
+void verify_batches(const std::vector<Slot>& slots, const BatchPlan& result);
+// Studio serializes each native sequence with an equal record width. Append
+// unused identities after each layer's required prefix to retain that contract.
+std::vector<LayerOrder> complete_layer_orders(const BatchPlan& result);
+std::string color_name(const std::string& color);
+std::string format_batch_schedule(const std::vector<Filament>& filaments, const BatchPlan& result);
+std::string format_batch_schedule_html(const std::vector<Filament>& filaments, const BatchPlan& result);
+
 // Throws invalid_argument for invalid inputs, runtime_error for impossible locks.
 // Minimizes demand replacements with Belady's farthest-next-use policy and
 // deterministic ties by slot index. Initial automatic loads are free.
@@ -66,7 +99,8 @@ std::string format_schedule_html(const std::vector<Filament>& filaments,
 // purge/extrusion. Do not infer order from a per-layer set or a sorted palette.
 // Templated so the trace contract can be tested without the slicer's dependencies.
 template<class Moves, class MoveType>
-std::vector<Request> collect_requests(const Moves& moves, MoveType tool_change, MoveType extrude)
+std::vector<Request> collect_requests(const Moves& moves, MoveType tool_change, MoveType extrude,
+                                      bool preserve_layers = false)
 {
     std::vector<Request> requests;
     for (std::size_t i = 0; i < moves.size(); ++i) {
@@ -74,7 +108,8 @@ std::vector<Request> collect_requests(const Moves& moves, MoveType tool_change, 
         if (move.type != tool_change && move.type != extrude)
             continue;
         const int filament = static_cast<int>(move.extruder_id);
-        if (requests.empty() || requests.back().filament != filament)
+        if (requests.empty() || requests.back().filament != filament ||
+            (preserve_layers && requests.back().layer != move.layer_id))
             requests.push_back({filament, move.layer_id, i, move.gcode_id});
     }
     return requests;

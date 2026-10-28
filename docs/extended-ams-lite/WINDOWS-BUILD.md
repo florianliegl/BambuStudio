@@ -110,8 +110,10 @@ the resource directory junction required by the application. The executable is
 An executable's presence alone does not establish that the complete build passed.
 
 Local result: both application and runtime-copy targets completed successfully.
-The application was launched and its normal Setup Wizard was inspected. Complete
-setup and model-to-schedule interaction remain manual checks. The build retains
+The original application was launched and its normal Setup Wizard was inspected.
+For the batch update, screen access was explicitly excluded: the rebuilt app is
+checked by a live process, a main window handle and window responsiveness.
+Layout and the complete interactive Preview flow remain manual checks. The build retains
 upstream warnings, including `LNK4098` about CRT default libraries; no broader
 release certification or full aggregate regression pass is claimed.
 
@@ -126,7 +128,12 @@ This test exercises the real G-code processor with eight virtual filaments
 mapped to one physical extruder. It is separate from the dependency-free planner
 tests and does not validate printer firmware.
 
-Local result: **35 assertions passed**. The test target links the actual HTTP and
+Local result after batch integration: **86 assertions in 3 test cases passed**,
+including a real eight-color/four-layer model slice and normal G-code export.
+Every layer retains eight colors; replay verifies four batch visits and sixteen
+spool replacements. The fixture initializes schema-backed options and explicit
+per-filament profiles/palette and selects its initial tool in the start macro,
+as a real printer profile does. The test target links the actual HTTP and
 encryption utilities required by the slicer's logging code and instantiates the
 upstream NanoSVG header implementation; no printer or GUI application is started
 by this test.

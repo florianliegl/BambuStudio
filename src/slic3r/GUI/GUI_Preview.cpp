@@ -311,13 +311,9 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
 
     wxBoxSizer *main_sizer = new wxBoxSizer(wxVERTICAL);
     auto* ams_row = new wxBoxSizer(wxHORIZONTAL);
-    auto* extended_ams = new wxCheckBox(this, wxID_ANY, _L("Extended AMS Lite Mode (dry run)"));
-    auto* swaps = new wxButton(this, wxID_ANY, _L("View swap schedule..."));
-    swaps->Disable();
-    ams_row->Add(extended_ams, 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+    auto* swaps = new wxButton(this, wxID_ANY, _L("Extended AMS Lite: batch swaps..."));
     ams_row->Add(swaps, 0, wxALL, 5);
     main_sizer->Add(ams_row, 0, wxEXPAND);
-    extended_ams->Bind(wxEVT_CHECKBOX, [extended_ams, swaps](wxCommandEvent&) { swaps->Enable(extended_ams->GetValue()); });
     swaps->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_gcode_result || m_gcode_result->moves.empty() ||
             (!m_only_gcode && !wxGetApp().plater()->get_partplate_list().get_curr_plate()->is_slice_result_valid())) {
@@ -325,8 +321,36 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
             return;
         }
         try {
-            ExtendedAMSLiteDialog dialog(this, *m_gcode_result);
-            dialog.ShowModal();
+            auto* plater = wxGetApp().plater();
+            auto* plate = plater->get_partplate_list().get_curr_plate();
+            const bool can_reorder = !m_only_gcode && wxGetApp().is_editor() &&
+                plate->get_real_print_seq() == PrintSequence::ByLayer;
+            ExtendedAMSLiteDialog dialog(this, *m_gcode_result, can_reorder,
+                m_only_gcode ? std::vector<std::string>{} : wxGetApp().preset_bundle->filament_presets);
+            if (dialog.ShowModal() == wxID_APPLY) {
+                // Apply native per-layer sequences, then regenerate travel,
+                // purge and tool changes through the normal slicing pipeline.
+                // Never reorder already generated motion commands.
+                std::vector<int> first;
+                std::vector<LayerPrintSequence> others;
+                for (const auto& layer : dialog.layer_orders()) {
+                    std::vector<int> ids;
+                    for (int id : layer.filaments) ids.push_back(id + 1);
+                    if (layer.layer == 1) first = ids;
+                    else if (!others.empty() && others.back().second == ids &&
+                             others.back().first.second + 1 == int(layer.layer))
+                        others.back().first.second = int(layer.layer);
+                    else others.push_back({{int(layer.layer), int(layer.layer)}, std::move(ids)});
+                }
+                plater->take_snapshot("Optimize AMS Lite layer order");
+                plate->set_first_layer_print_sequence(first);
+                plate->set_other_layers_print_sequence(others);
+                plater->update_project_dirty_from_presets();
+                plater->set_plater_dirty(true);
+                plater->config_change_notification(*plate->config(), "print_sequence");
+                plater->update();
+                plater->reslice();
+            }
         } catch (const std::exception& error) {
             wxMessageBox(wxString::FromUTF8(error.what()), _L("Extended AMS Lite Mode"), wxOK | wxICON_ERROR, this);
         }

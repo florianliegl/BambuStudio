@@ -1,207 +1,152 @@
-# Extended AMS Lite Mode
+# Extended AMS Lite
 
-This branch implements a **dry-run planning milestone**, not executable 8-color
-A1 printing. The Windows application is now built locally and has been launched
-successfully to its normal Setup Wizard. The standalone planner and real G-code
-processor integration checks pass. The complete import/slice/Preview interaction
-still needs manual validation after first-run setup; it is not claimed as tested.
+Batch planning and native layer ordering for a single-extruder project using
+eight or more virtual filaments and four physical AMS Lite slots.
 
-## Use the local Windows build
+**Printing with automatic spool swaps remains unavailable.** The software does
+not yet have a verified mid-print A1 unload, pause, replacement, reload and resume
+procedure for the user's firmware. No executable swap pauses or send-time AMS
+mapping are generated. A successful build or simulated replay does not validate
+these firmware operations.
 
-In PowerShell, from this repository:
+## Use the Windows application
+
+From this repository in PowerShell:
 
 ```powershell
 .\Run-Extended-AMS-Lite.cmd
 ```
 
-The application is already open at the Setup Wizard in this session. Click
-**Get Started**, select the A1 during setup, and open your existing eight-color
-3MF as a project. Slice it, switch to **Preview**, enable **Extended AMS Lite Mode
-(dry run)**, and choose **View swap schedule...**. Keep physical slots at 4 for
-standard AMS Lite. This calculates a schedule for your own slice; the separate
-demo executable always uses its fixed synthetic example.
+The launcher opens `build/extended-ams-app/src/Release/bambu-studio.exe` with the
+separate settings directory `build/extended-ams-userdata`.
 
-The launcher uses a separate configuration directory at
-`build/extended-ams-userdata`. The executable is
-`build/extended-ams-app/src/Release/bambu-studio.exe`; its resource junction and
-runtime DLLs must remain in place. No installer is needed for this local build.
-Do not send an eight-color/four-slot job based on this planner: automatic pause,
-spool-handling and mapping execution are still unavailable.
+1. Open an editable 3MF project, select the A1, configure and paint the virtual
+   colors normally, and slice the plate.
+2. In **Preview**, select **Extended AMS Lite: batch swaps...**.
+3. Leave **Optimize layers** selected to prepare batches and reuse the last batch
+   on the next layer. Four initial slot cards show what to load. The visit selector
+   shows one entry per human visit; its four cards show every replacement together.
+4. Expand **First-layer order and slot settings** for manual first-layer color
+   ordering. Check **Use my first-layer order**, select a color, and use **Up** or
+   **Down**. Initial slot overrides and spool locks are also available there.
+5. Choose **Apply order & slice** to save the proposed order through Studio's
+   normal per-layer sequence settings and regenerate the toolpaths. This is an
+   undoable project edit. Reopen the planner after slicing; deselect **Optimize
+   layers** to inspect the actual resulting selection order and positions.
+6. **Export plan...** saves a visual HTML report or a text report.
 
-Base verified on 2026-10-28 using the official GitHub releases API:
-[`v02.08.02.61`](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61),
-commit `926a7192574bcb9b3a732e1ec59a46d79cb45466`, published 2026-08-21.
-The API marked it neither draft nor prerelease; the release page calls it the
-latest public release. Newer beta releases were deliberately excluded.
-Feature branch: `codex/extended-ams-lite`.
+Imported G-code can be analyzed but cannot be reordered. Mixed-filament and
+multiple-extruder inputs are rejected. Sequential object printing cannot use
+layer optimization. Source profiles and materials remain separate identities,
+even if their displayed colors are identical. Color names are approximate labels;
+the original hexadecimal colors and virtual IDs identify the actual palette.
 
-## Current behavior
+Do not send an eight-color project to four slots based on this planner. Applying
+layer order regenerates ordinary virtual-filament G-code; it does not enable the
+missing physical swap execution backend. Ordinary Studio send behavior is unchanged.
 
-| Component | Status |
-| --- | --- |
-| Isolated C++17 scheduler | Implemented, compiled with MSVC, tested |
-| 8+ virtual colors / 4 physical slots | Scheduling implemented; no 8-color limit |
-| Actual processed selection order | Preview consumes `GCodeProcessorResult::moves`; includes tool selections and extrusion, not layer palette order |
-| Initial assignments and locked slots | Implemented; invalid or impossible configurations produce errors |
-| Repeated colors and switches within a layer | Supported by the planner |
-| Independent replay verification | Checks availability at every filament run and all replacements |
-| Preview toggle and configuration dialog | Compiled into the Windows app; full interaction validation pending |
-| Color/material labels and chronological table | Compiled; consumes sliced metadata; full UI validation pending |
-| Text and HTML export | Core formatter tested; GUI file dialog validation pending |
-| Grouped replacements | Plan model, verifier, and presentation support groups; optimizer currently emits one demand replacement per stop |
-| Executable pause generation and AMS remapping | **Unavailable; no execution backend** |
-| Live swap notifications / Handy custom messages | **Unavailable; no verified event-to-swap correlation** |
-| Physical A1 validation | **Not performed** |
+## Batch behavior
 
-The toggle enables the planning UI for this Preview session only. It is off by
-default, does not change a printer preset or 3MF, and is not persisted. Slot
-overrides are local to the schedule dialog; changing the slot count clears them.
-The dialog snapshots the current result so a schedule cannot silently change
-under the user. Re-slice and reopen it after changing the model or profiles.
+The objective prioritizes fewer human visits, then reduces color changes where
+possible. Eight colors across four full layers can use:
 
-## Planning workflow
+```text
+Layer 1: batch A -> one visit -> batch B
+Layer 2: batch B -> one visit -> batch A
+Layer 3: batch A -> one visit -> batch B
+Layer 4: batch B -> one visit -> batch A
+```
 
-1. Select the normal A1 printer profile. Add eight or more virtual filaments in
-   Prepare, choose their profiles/colors/materials, and paint normally.
-2. Slice the plate using Bambu Studio's normal virtual filament workflow.
-3. In Preview, enable **Extended AMS Lite Mode (dry run)** and choose
-   **View swap schedule...**.
-4. Leave physical slots at 4 for standard AMS Lite. Optionally select initial
-   occupants or lock slots, then calculate the schedule.
-5. Review initial loading, chronological stop/layer/slot instructions, color and
-   material identities, and source move/line IDs. Export text or HTML if useful.
+This example needs **4 visits and 16 spool replacements**, rather than 16 visits
+for one-spool-at-a-time handling. Keeping the last color at the start of the next
+layer gives 28 machine color changes in the synthetic eight-color/four-layer case.
+Actual models, sparse layers, support, overrides and locks can produce different
+results. The bank/order heuristic is deterministic; it is not a proof of the
+globally best palette partition or purge volume.
 
-This feature does not make an eight-filament slice printable on four slots. It
-does not change the existing Send dialog, add pauses, remap tools, or provide a
-Send/Resume action. Do not use the hypothetical schedule as printer instructions.
-The ordinary Send workflow remains upstream behavior and is not certified by
-enabling the planner. The schedule table is the current preview of planned
-positions; no automatic pause markers are added to the layer slider.
+Every virtual identity has one fixed physical slot throughout a batch plan.
+At a missing color, the planner prepares the longest upcoming run that can fit
+without assigning two different identities to the same slot. It combines all
+needed replacements into that visit. For a fixed slot mapping and initial load,
+this greedy window policy minimizes visits; an independent exhaustive solver
+tests that property. It may replace the currently active spool, which is one
+reason hardware unloading must be verified before execution is enabled.
 
-## Algorithm and boundaries
+The UI snapshots actual processed moves, preserving layer boundaries even when
+the color stays the same. Layer proposals retain each layer's required identities,
+group them into banks, prefer the carried bank first and preserve a shared boundary
+color. Manual first-layer order is exact and may increase visits. Proposal
+positions never masquerade as real G-code line numbers.
 
-`src/libslic3r/ExtendedAMSLite/Planner.{hpp,cpp}` uses Belady's offline
-farthest-next-use replacement rule. Empty initial slots are filled in first-use
-order. Explicit initial occupants are honored. A missing required virtual
-filament replaces the unlocked occupant needed farthest in the future, with
-never-used-again occupants preferred and equal choices resolved by lowest slot.
-Locked occupants are never removed. Time is O(requests × slots + filament count),
-including input processing, with O(requests + filament count) temporary storage.
+Applying an order uses `PartPlate`'s existing first/other-layer sequence APIs and
+normal slicing. It does not rearrange already emitted motion commands. Native
+sequence records include unused filaments after the required prefix to preserve
+Studio's fixed-width serialization. Identical adjacent ranges are compressed.
+Studio remains responsible for support ordering, purge, temperatures and toolpaths;
+the resliced trace is the source of truth.
 
-This minimizes the number of demand replacements under the model of one required
-filament per request, equal replacement cost, freely chosen automatic initial
-loads, fixed locked occupants, and no physical restrictions on evicting any
-unlocked spool. It does not minimize time, total handling, or grouped pauses.
-In particular, the model may evict the spool currently feeding the nozzle. A
-future execution backend must enforce supported unloading/parking and active
-slot restrictions and may therefore require a different schedule.
+The old Belady demand-replacement planner remains available as a core reference
+and in regression tests. The application and demo now use batch planning.
 
-Virtual filament identity, physical slot index, and firmware tool selection
-remain distinct. The plan contains a physical slot for **each ordered request**,
-not a single static mapping per virtual color. Every plan is replayed independently
-before display. No identity, nozzle temperature, purge volume, retraction,
-extrusion, or G-code tool number is rewritten.
+## Build and checks
 
-Move `extruder_id` is a historical name: in this release
-`GCodeProcessor::store_move_vertex()` fills it with `get_filament_id()`, not the
-physical extruder ID. The integration relies on that exact contract. A new
-`MoveVertex::layer_id` preserves the original layer number when `finalize()`
-turns `layer_duration` into seconds. Layer 0 is shown as startup/unknown. G-code
-line IDs are processor IDs after its normal postprocessing; they are inspection
-positions, never claimed to be validated insertion points. The snapshot only
-knows events recognized by the existing processor; arbitrary custom macros,
-external postprocessing, and undocumented firmware conditionals can invalidate
-an inferred execution sequence.
-
-Single-extruder input is supported. The dialog rejects mixed-filament and
-multi-extruder results. Material names are displayed, not certified compatible.
-Equal color or equal material names never merge virtual identities. Mixed
-materials, AMS suitability, temperatures, and pair-specific purge behavior need
-the normal slicer checks plus future physical execution validation.
-
-## Build and test
-
-The core has no Boost, wxWidgets, printer, network, or cloud dependencies. From a
-Visual Studio developer prompt with CMake on PATH:
+The standalone core needs C++17 and CMake, without wxWidgets or printer access:
 
 ```powershell
 cmake -S tests/extended_ams_lite -B build/extended-ams-lite -A x64
 cmake --build build/extended-ams-lite --config Release
 ctest --test-dir build/extended-ams-lite -C Release --output-on-failure
-& ./build/extended-ams-lite/Release/extended_ams_lite_demo.exe
-& ./build/extended-ams-lite/Release/extended_ams_lite_demo.exe --html |
-    Set-Content -Encoding utf8 ./build/extended-ams-lite/demo.html
+.\build\extended-ams-lite\Release\extended_ams_lite_demo.exe
 ```
 
-On Linux/macOS omit `-A x64`, add `-DCMAKE_BUILD_TYPE=Release`, and find the demo
-binary directly under `build/extended-ams-lite`. The synthetic eight-color demo
-has 18 filament runs and seven planned stops. It is not a sliced real model.
+On Linux/macOS omit `-A x64`, add `-DCMAKE_BUILD_TYPE=Release` and use the binaries
+directly in the build directory.
 
-Standalone tests include four-color/no-swap, eight-color, twelve-color,
-same-layer changes, repeated use, alternation, locked and overridden slots,
-grouped replacements, bad references, impossible lock configurations, corrupted
-plans, retained virtual identities, report escaping, startup and selection-before-
-purge trace behavior, 20,480 exhaustive optimality comparisons, and 1,000
-deterministic randomized replays. Checks run in Release builds as well as Debug.
+The demo is a synthetic four-layer/eight-color model of selections. It now emits
+batch proposals rather than the original seven-stop Belady example. Example
+exports: [HTML](demo-schedule.html), [text](demo-schedule.txt).
 
-`tests/libslic3r/test_extended_ams_lite.cpp` additionally uses the **real**
-`GCodeProcessor` with eight virtual filaments mapped to one extruder, tests the
-retained layer IDs, and checks result copy/reset. It is built as the dedicated
-`extended_ams_lite_integration` target when full dependencies are available.
-**All 35 assertions pass locally.** The standalone trace test uses a fixture
-with the same fields and is separate from this real integration test.
+Local standalone Release verification: **38,286 checks**, including 20,480 cache
+optimality comparisons, 4,096 fixed-mapping batch optimum comparisons and 1,300
+randomized replays. Tests include exact manual order, sparse layers, locks,
+overrides, stable slot identity, repeatable reslicing, retained layer palettes, corrupt plans, unknown
+colors and escaped exports.
 
-Local Release result: **21,538 checks passed**, including all exhaustive and
-randomized cases above. The exported demo is available as
-[`demo-schedule.html`](demo-schedule.html) and
-[`demo-schedule.txt`](demo-schedule.txt). Browser security blocked opening a local
-HTML file in the available preview tool, so its visual layout remains unverified;
-export content and escaping were tested programmatically.
-
-For a complete Windows application build, follow the official
-[Windows compilation guide](https://github.com/bambulab/BambuStudio/wiki/Windows-Compile-Guide).
-Install Visual Studio C++ tools/Windows SDK, CMake, Git and the dependency-build
-prerequisites in that guide, then use the repository's build script:
+The dedicated `extended_ams_lite_integration` target links the actual slicer.
+It tests real processed virtual selections, retained layer/material/color metadata,
+native sequence serialization/callbacks, and a real eight-color coupon slice and
+G-code export. All eight colors are checked on every exported layer, with four
+grouped visits and sixteen replacements. **86 assertions across 3 integration
+test cases pass locally.**
 
 ```powershell
-.\build_win.bat -s all-dirty -c Release -r none
-```
-
-Build the dependency tree first if using CMake directly; pass its install prefix
-through `CMAKE_PREFIX_PATH`. The local VS 2022/MSVC 19.44 and CMake 3.31 build
-uses the official stable dependency bundle, relocated metadata, and five locally
-rebuilt libraries to match the installed compiler. See
-[WINDOWS-BUILD.md](WINDOWS-BUILD.md) for provenance and commands. The application
-and runtime DLL copy targets now build successfully. No custom installer or
-self-contained distribution package is supplied.
-
-After dependencies are installed, enable the normal test build and run the
-integration test (adapt the dependency prefix to your actual build):
-
-```powershell
-cmake -S . -B build/extended-ams-app -A x64 `
-  -DCMAKE_PREFIX_PATH=C:/path/to/dependencies/usr/local -DSLIC3R_BUILD_TESTS=ON
-cmake --build build/extended-ams-app --config Release `
-  --target BambuStudio_app_gui BambuStudioDllsCopy extended_ams_lite_integration
-# Set PATH to the dependency bin and bin/occt directories before this test:
+# After configuring the full application with dependencies and SLIC3R_BUILD_TESTS=ON:
+cmake --build build/extended-ams-app --config Release --target extended_ams_lite_integration
+# Include dependency bin and bin/occt in PATH before running:
 ctest --test-dir build/extended-ams-app -C Release -R '^extended_ams_lite_integration$' --output-on-failure
 ```
 
-The upstream aggregate tests currently have unrelated OBJ/rotation/raster API
-compile errors; those regressions are not claimed as passing. The dedicated
-integration target avoids modifying those older tests. The build also emits
-upstream warnings, including a `LIBCMT`/CRT default-library conflict warning;
-it is not a warning-free or release-certified build.
+For the full application, see [WINDOWS-BUILD.md](WINDOWS-BUILD.md) and the official
+[Windows compilation guide](https://github.com/bambulab/BambuStudio/wiki/Windows-Compile-Guide).
+The local build uses VS 2022/MSVC 19.44, the official dependency bundle and five
+locally rebuilt libraries. Upstream warnings, including a CRT linker warning,
+remain. The unrelated aggregate OBJ/rotation/raster tests are not claimed as passing.
+The standalone GitHub workflow covers Windows, Linux and macOS.
 
-Keep the official Studio install until the custom build has passed regression checks.
-The added GitHub Actions workflow builds/tests the standalone planner on
-Windows, Linux and macOS; it does not claim to build the GUI or validate firmware.
+No screen automation or screen inspection is used for this update. Compilation,
+unit/integration checks and a process/window-responsiveness startup check do not
+constitute visual QA or physical printer validation.
 
-## Firmware investigation and next steps
+## Execution boundary and upstream
 
-See [architecture and capabilities](ARCHITECTURE.md) for exact upstream files,
-confirmed source behavior, unverified firmware behavior, notification blockers,
-and the staged validation procedure. No live A1 commands were sent.
+The user's workflow requires the active filament to be pulled back as during a
+normal AMS change before replacing its spool. The A1 profile contains normal
+tool-change macros and an end-of-print `T255` unload path. An end-of-print macro
+does not establish safe mid-print reuse, reload, thermal state or resume behavior.
+The printer's firmware version and a supported mid-print procedure remain needed.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for source evidence and remaining boundaries.
 
-For upstream releases, follow [UPSTREAM.md](UPSTREAM.md). Preserve this project's
-AGPLv3 obligations and upstream copyright notices when distributing custom builds.
+Base: stable [`v02.08.02.61`](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61),
+commit `926a7192574bcb9b3a732e1ec59a46d79cb45466`, verified on 2026-10-28.
+Feature branch: `codex/extended-ams-lite`. [UPSTREAM.md](UPSTREAM.md) describes
+updates. Preserve the project's AGPLv3 license and upstream copyright notices.

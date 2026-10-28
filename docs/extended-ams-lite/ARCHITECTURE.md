@@ -10,7 +10,7 @@ the evidence. This is a source audit, not an A1 firmware certification.
 | Concern | Source / class | Finding |
 | --- | --- | --- |
 | Virtual filament profiles, colors, materials | `src/libslic3r/PresetBundle.hpp`, `PresetBundle::filament_presets`; `PrintConfig.hpp` | Existing filament profile list and per-filament options are reused |
-| Toolpath ordering | `src/libslic3r/GCode/ToolOrdering.{hpp,cpp}` | Orders tools/layers for slicing; planner does not change it |
+| Toolpath ordering | `src/libslic3r/GCode/ToolOrdering.{hpp,cpp}`, `PartPlate` | Batch proposals use native sequence settings and normal reslicing |
 | G-code generation | `src/libslic3r/GCode.cpp`, `GCodeWriter.cpp` | Existing tool-change and purge/profile paths remain upstream |
 | Processed virtual selection identity | `GCodeProcessor::process_filament_change`, `store_move_vertex` | Move field `extruder_id` actually receives virtual `filament_id` |
 | Pause generation | `GCode.cpp` custom `PausePrint` handling | Expands configured `machine_pause_gcode`; custom message output is commented out with a firmware FIXME |
@@ -45,7 +45,9 @@ A1 job; supported unloading and loading while paused; replacing the active spool
 changing the virtual-to-slot mapping in a running job; whether resumed selections
 use the revised mapping; buffered motion ordering at within-layer pauses; RFIDs
 and slot metadata; expected purge and thermal state; exact pause/resume behavior
-on the user's A1 firmware version. No firmware version was provided or queried.
+on the user's A1 firmware version. The firmware version was requested but has
+not been provided. The user confirmed active filament needs retraction as during
+a normal change; a repeatable mid-print command sequence was not supplied.
 The official Wiki could not be retrieved during this session; no conclusion about
 hardware support is inferred from those inaccessible pages.
 
@@ -81,10 +83,11 @@ after completing a verified load procedure.
 - `src/libslic3r/GCode/GCodeProcessor.hpp`: append retained layer metadata and
   sliced filament material names; copy material metadata with result assignment.
 - `src/libslic3r/GCode/GCodeProcessor.cpp`: snapshot material metadata on finalize,
-  preserve layer ID before replacing layer-duration placeholder, reset materials.
+  preserve layer ID before replacing layer-duration placeholder, reset materials,
+  and retain filament colors in the static configuration path.
 - `src/slic3r/CMakeLists.txt`: register the new GUI dialog.
-- `src/slic3r/GUI/GUI_Preview.cpp`: add an off-by-default dry-run toggle and dialog
-  launcher, refusing unsliced or stale current plates.
+- `src/slic3r/GUI/GUI_Preview.cpp`: launch batch planning, refusing unsliced or
+  stale current plates; save native sequences with undo and request reslicing.
 - `tests/CMakeLists.txt`: register the dependency-free planner tests.
 - `tests/extended_ams_lite/CMakeLists.txt`: register the standalone tests and a
   separate real-processor integration executable. The upstream aggregate tests
@@ -92,19 +95,28 @@ after completing a verified load procedure.
 
 New core, GUI, tests, workflow, and documentation live in separate files. There
 are no changes to firmware, printer profiles, send jobs, tool ordering, purge,
-G-code generation, or networking code. Retained metadata is calculated even when
-the planner UI is off; it does not affect generated motion or mapping.
+G-code generation, or networking code. Applying a layer-order proposal changes
+the project's native sequence settings and regenerates ordinary toolpaths.
+Opening the planner without applying changes does not alter motion or mapping.
+
+The batch planner gives every virtual identity a stable physical slot, groups
+all replacements at one visit, and carries the last bank into the next layer.
+This removes dynamic slot reassignment from this planning model; it does not
+implement a send-time mapping backend. Native sequence records are padded to
+equal widths with unused identities after the required prefix, because Studio's
+serializer otherwise cannot decode layers with different palette sizes.
 
 ## Validation and safe first use
 
 1. **Software dry run (available now):** compile and run the standalone tests
-   and demo. Inspect the initial four slots and all seven demo swaps. No printer
+   and demo. Inspect the initial four slots and four grouped demo visits. No printer
    needs to be connected.
 2. **Application validation (partially complete):** the Windows application and
-   real processor test build; all 35 integration assertions pass. Application
-   startup was visually checked to the normal Setup Wizard. Its embedded buttons
-   were not operable through the available native UI automation, so first-run
-   setup and the complete model/Preview workflow need manual validation.
+   real processor test build. Dedicated tests cover native sequence persistence
+   and actual eight-color model slicing/G-code export (86 assertions). The previous application was used by
+   the user to export a real schedule. The updated application is checked by
+   process/window responsiveness, without screen access as requested. Interactive
+   UI layout and the full Preview button flow still need manual validation.
    Slice a small eight-color model; compare every
    planned request with Preview's tool-change order and exported G-code, including
    purge and startup. Reopen after re-slicing and changing plates. Check unknown

@@ -11,13 +11,13 @@ int main(int argc, char** argv)
         {"Green", "PLA", "#22A86A"}, {"Yellow", "PLA", "#F2C438"},
         {"Purple", "PLA", "#9755CE"}, {"Orange", "PLA", "#ED8736"}};
     // Synthetic selection trace, not a physically validated print.
-    const std::vector<int> ids = {0, 1, 2, 3, 4, 0, 5, 1, 6, 0, 7, 1, 2, 3, 4, 5, 6, 7};
     std::vector<Request> requests;
-    for (std::size_t i = 0; i < ids.size(); ++i)
-        requests.push_back({ids[i], static_cast<unsigned int>(i < 10 ? 42 : 43), i * 100, static_cast<unsigned int>(i * 120 + 1)});
-    const auto result = plan(requests, filaments.size(), std::vector<Slot>(4));
+    for (unsigned layer = 1; layer <= 4; ++layer)
+        for (int id = 0; id < 8; ++id)
+            requests.push_back({id, layer, requests.size() * 100, static_cast<unsigned>(requests.size() * 120 + 1)});
+    const auto result = plan_batches(requests, filaments.size(), std::vector<Slot>(4), {}, true);
     if (argc > 1 && std::string(argv[1]) == "--html")
-        std::cout << format_schedule_html(filaments, requests, result);
+        std::cout << format_batch_schedule_html(filaments, result);
     else
-        std::cout << format_schedule(filaments, requests, result);
+        std::cout << format_batch_schedule(filaments, result);
 }

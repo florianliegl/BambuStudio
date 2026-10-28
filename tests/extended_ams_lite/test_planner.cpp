@@ -5,6 +5,7 @@
 #include <iostream>
 #include <map>
 #include <random>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -114,6 +115,141 @@ void scenarios()
     check(html.find("style=\"background:red;") == std::string::npos, "Untrusted color cannot inject CSS");
 }
 
+void batch_scenarios()
+{
+    const std::vector<Slot> slots(4);
+    std::vector<Request> input;
+    for (unsigned layer = 1; layer <= 4; ++layer)
+        for (int id = 0; id < 8; ++id) input.push_back({id, layer, input.size(), unsigned(input.size() + 1)});
+    const auto current = plan_batches(input, 8, slots);
+    const auto optimized = plan_batches(input, 8, slots, {}, true);
+    check(current.schedule.stops.size() == 7, "Repeated banks need seven visits without reordering");
+    check(optimized.schedule.stops.size() == 4, "Eight colors over four layers need only four visits with carry-over");
+    check(optimized.spool_replacements == 16, "Four complete bank changes replace sixteen spools");
+    check(optimized.color_changes == 28, "Keep boundary color to attain seven changes per eight-color layer");
+    for (const auto& stop : optimized.schedule.stops)
+        check(stop.replacements.size() == 4, "All four replacements belong to one visit");
+    for (std::size_t layer = 1; layer < optimized.layers.size(); ++layer)
+        check(optimized.layers[layer - 1].filaments.back() == optimized.layers[layer].filaments.front(), "Next layer starts with the loaded color");
+    check(input[0].gcode_line == 1 && input.back().layer == 4, "Input positions remain untouched");
+    check(optimized.reordered && optimized.requests.front().gcode_line == 0, "Proposed positions are never presented as actual G-code positions");
+    auto manual = plan_batches(input, 8, slots, {3, 1, 0, 2, 7, 6, 5, 4}, true);
+    check(manual.layers.front().filaments == std::vector<int>({3, 1, 0, 2, 7, 6, 5, 4}), "Manual first-layer order is exact");
+    check(manual.schedule.initial_slots == std::vector<int>({3, 1, 0, 2}), "Initial load follows the manual first batch");
+    const auto locked = plan_batches(input, 8, {{0, true}, {7, false}, {-1, false}, {-1, false}}, {}, true);
+    check(locked.schedule.initial_slots[0] == 0 && locked.schedule.initial_slots[1] == 7, "Batch plan respects initial and locked slots");
+    for (const auto& stop : locked.schedule.stops)
+        for (const auto& change : stop.replacements) check(change.slot != 0, "Batch plan never replaces locked spool");
+    check(plan_batches(trace({0, 1, 0}), 2, {{0, true}, {1, true}}).schedule.stops.empty(), "All-locked resident job succeeds");
+    check(plan_batches(trace({0, 1, 2}), 3, slots, {}, true).schedule.stops.empty(), "Small palette needs no visits");
+
+    // Representative four-layer snake pattern from the user's schedule. The
+    // demand planner makes 16 visits; fixed-slot batches group these into four.
+    input.clear();
+    const std::vector<int> a{7, 1, 3, 6, 4, 5, 2, 0}, b{0, 2, 5, 4, 6, 3, 1, 7};
+    for (unsigned layer = 1; layer <= 4; ++layer)
+        for (int id : layer % 2 ? a : b) {
+            if (!input.empty() && input.back().filament == id) continue;
+            input.push_back({id, layer, input.size(), unsigned(input.size() * 10 + 1)});
+        }
+    check(input.size() == 29, "Shared layer-boundary colors are compressed in fixture");
+    const auto legacy = plan(input, 8, slots);
+    const auto grouped = plan_batches(input, 8, slots);
+    check(legacy.stops.size() == 16 && grouped.schedule.stops.size() == 4, "Existing snake order groups sixteen visits into four");
+    check(grouped.spool_replacements == 16, "Grouping reduces visits while preserving actual spool work");
+    const std::vector<Filament> metadata(8, {"<profile>", "PLA", "#FFFFFF"});
+    const auto report = format_batch_schedule(metadata, optimized);
+    const auto html = format_batch_schedule_html(metadata, optimized);
+    check(report.find("Visits: 4") != std::string::npos && report.find("PROPOSED") != std::string::npos, "Batch report identifies proposed visits");
+    check(report.find("G-code line ID") == std::string::npos, "Proposed report omits fictitious G-code positions");
+    check(html.find("&lt;profile&gt;") != std::string::npos && html.find("<profile>") == std::string::npos, "Batch HTML escapes metadata");
+    check(color_name("#FFFFFF") == "White" && color_name("#2463EB") == "Blue" && color_name("") == "Unknown color", "Readable colors and explicit unknown metadata");
+    rejects([&] { plan_batches(input, 8, slots, {1, 1}, true); });
+    rejects([&] { plan_batches(input, 8, slots, {8}, true); });
+    rejects([&] { plan_batches(trace({0, 1}, 0), 8, slots, {}, true); });
+    rejects([&] { auto bad = input; bad.back().layer = 1; plan_batches(bad, 8, slots, {}, true); });
+    rejects([&] { plan_batches(input, 8, {{0, true}, {1, true}, {2, true}, {3, true}}); });
+    rejects([&] { auto bad = optimized; bad.filament_slots[0] = 3; verify_batches(slots, bad); });
+    rejects([&] { auto bad = optimized; ++bad.spool_replacements; verify_batches(slots, bad); });
+}
+
+// Independent dynamic program permits every legal simultaneous slot load at
+// every position, including proactive changes. It does not use greedy windows.
+int optimum_visits(const std::vector<Request>& input, const BatchPlan& plan)
+{
+    using Key = std::pair<std::size_t, std::vector<int>>;
+    std::map<Key, int> memo;
+    std::function<int(std::size_t, const std::vector<int>&)> solve;
+    solve = [&](std::size_t i, const std::vector<int>& loaded) {
+        if (i == input.size()) return 0;
+        const Key key{i, loaded};
+        const auto cached = memo.find(key);
+        if (cached != memo.end()) return cached->second;
+        const int required = input[i].filament;
+        int best = 10000;
+        if (loaded[plan.filament_slots[required]] == required) best = solve(i + 1, loaded);
+        auto candidate = loaded;
+        std::function<void(std::size_t)> enumerate = [&](std::size_t s) {
+            if (s == loaded.size()) {
+                if (candidate != loaded && candidate[plan.filament_slots[required]] == required)
+                    best = std::min(best, 1 + solve(i + 1, candidate));
+                return;
+            }
+            candidate[s] = loaded[s];
+            enumerate(s + 1);
+            for (std::size_t id = 0; id < plan.filament_slots.size(); ++id)
+                if (plan.filament_slots[id] == int(s) && int(id) != loaded[s]) {
+                    candidate[s] = int(id);
+                    enumerate(s + 1);
+                }
+        };
+        enumerate(0);
+        memo.emplace(key, best);
+        return best;
+    };
+    return solve(0, plan.schedule.initial_slots);
+}
+
+void batch_exhaustive_and_random()
+{
+    for (unsigned encoded = 0; encoded < 4096; ++encoded) {
+        unsigned n = encoded;
+        std::vector<int> ids;
+        for (int i = 0; i < 6; ++i) { ids.push_back(n % 4); n /= 4; }
+        const auto input = trace(ids);
+        const auto p = plan_batches(input, 4, std::vector<Slot>(2));
+        check(int(p.schedule.stops.size()) == optimum_visits(input, p), "Greedy batch visits attain exhaustive fixed-mapping optimum");
+    }
+    std::mt19937 random(143);
+    for (int trial = 0; trial < 300; ++trial) {
+        std::vector<Request> input;
+        std::map<unsigned, std::set<int>> required;
+        for (unsigned layer = 1; layer <= 10; ++layer) for (int i = 0; i < 10; ++i) {
+            int id = int(random() % 12);
+            input.push_back({id, layer, input.size(), unsigned(input.size() + 1)});
+            required[layer].insert(id);
+        }
+        auto slots = std::vector<Slot>(4);
+        if (trial % 2) slots[0] = {0, true};
+        const auto p = plan_batches(input, 12, slots, {}, true);
+        verify_batches(slots, p);
+        std::vector<Request> resliced;
+        for (const auto& layer : p.layers)
+            for (int id : layer.filaments) resliced.push_back({id, layer.layer, resliced.size(), 0});
+        const auto repeated = plan_batches(resliced, 12, slots, {}, true);
+        for (std::size_t layer = 0; layer < p.layers.size(); ++layer)
+            check(repeated.layers[layer].filaments == p.layers[layer].filaments, "Reapplying optimization retains the same layer order");
+        check(p.layers.size() == required.size(), "Reordering retains every source layer");
+        for (const auto& layer : p.layers)
+            check(std::set<int>(layer.filaments.begin(), layer.filaments.end()) == required[layer.layer], "Reordering preserves each layer's required identities");
+        for (const auto& layer : complete_layer_orders(p)) {
+            check(layer.filaments.size() == 12, "Native sequence records have equal widths on sparse layers");
+            check(std::equal(p.layers[layer.layer - 1].filaments.begin(), p.layers[layer.layer - 1].filaments.end(), layer.filaments.begin()), "Native padding retains each required prefix");
+        }
+        check(p.schedule.request_slots == plan_batches(input, 12, slots, {}, true).schedule.request_slots, "Batch output is deterministic");
+    }
+}
+
 void invalid_inputs_and_corruption()
 {
     const auto requests = trace({0, 1, 2, 3, 4, 5, 6, 7});
@@ -169,6 +305,8 @@ void trace_contract()
     check(requests[0].layer == 0 && requests[0].gcode_line == 10, "Startup selection preserved before purge");
     check(requests[2].layer == 1 && requests[2].move == 8, "Within-layer selection position preserved");
     check(requests[3].filament == 1 && requests[3].layer == 2, "Extrusion-only initial tool can be discovered");
+    const auto layered = collect_requests(moves, Type::Tool, Type::Extrude, true);
+    check(layered.size() == 5 && layered[1].filament == 7 && layered[1].layer == 1, "Layer-aware trace retains extrusion after startup with the same color");
     auto copy = moves;
     const auto result = plan(requests, 8, std::vector<Slot>(2));
     (void)result;
@@ -214,7 +352,9 @@ int main()
         invalid_inputs_and_corruption();
         trace_contract();
         exhaustive_and_random();
-        std::cout << "Passed " << checks << " checks, including 20,480 exhaustive optimum comparisons and 1,000 randomized replays.\n";
+        batch_scenarios();
+        batch_exhaustive_and_random();
+        std::cout << "Passed " << checks << " checks, including 20,480 cache and 4,096 batch optimum comparisons, plus 1,300 randomized replays.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL after " << checks << " checks: " << error.what() << '\n';

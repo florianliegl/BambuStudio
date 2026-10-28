@@ -1947,6 +1947,10 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
     // BBS
     size_t filament_count = config.filament_diameter.values.size();
     m_result.filaments_count = filament_count;
+    // The static slicing configuration must retain the same palette as the
+    // dynamic/import path. The batch planner consumes this result snapshot.
+    m_result.extruder_colors = config.filament_colour.values;
+    m_result.extruder_colors.resize(filament_count);
 
     //assert(config.nozzle_volume.size() == config.nozzle_diameter.size());
     m_nozzle_volume.resize(config.nozzle_volume.size());

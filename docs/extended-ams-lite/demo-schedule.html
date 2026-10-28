@@ -1,17 +1,65 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Extended AMS Lite - Dry-run swap schedule</title>
-<style>
-*{box-sizing:border-box}body{font:15px/1.55 system-ui,sans-serif;margin:0;background:#f3f5f5;color:#18252a}
-main{max-width:1160px;margin:auto;padding:36px 28px}h1{font-size:32px;margin:4px 0 12px;letter-spacing:-1px}
-h2{font-size:20px;margin:28px 0 12px}.eyebrow{color:#386555;font-weight:700;font-size:12px;letter-spacing:2px}
-.warning{background:#fff3d7;border-left:4px solid #c58b15;padding:16px 20px;border-radius:5px}
-.stats{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}.stat{background:white;padding:16px 24px;border:1px solid #dce3e2;border-radius:8px}
-.stat strong{font-size:27px;display:block}.slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
-.slot{padding:16px;background:white;border:1px solid #dce3e2;border-radius:8px}.slot b{display:block;margin-bottom:10px}
-.swatch{display:inline-block;width:17px;height:17px;border-radius:50%;border:1px solid #0003;margin-right:8px;vertical-align:middle}
-.table{overflow:auto;background:white;border:1px solid #dce3e2;border-radius:8px}table{border-collapse:collapse;width:100%;text-align:left}
-th,td{padding:15px 18px;border-bottom:1px solid #e4e9e8;vertical-align:top}th{background:#eaf0ed;font-size:12px;text-transform:uppercase;white-space:nowrap}
-small{display:block;color:#5d6d70}footer{margin-top:24px;color:#5d6d70;font-size:13px}
-@media print{body{background:white}main{padding:0}.table{overflow:visible}tr{break-inside:avoid}}
-</style><main><div class="eyebrow">EXTENDED AMS LITE / SIMULATION</div><h1>Your filament swap schedule</h1>
-<div class="warning"><strong>Dry run - printing support unavailable.</strong><br>Simulation only. Automatic printing is unavailable: A1 AMS Lite spool replacement, mapping changes during a paused print, safe unload/reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.</div><div class=stats><div class=stat><strong>8</strong>virtual filaments</div><div class=stat><strong>4</strong>physical slots</div><div class=stat><strong>7</strong>planned stops</div><div class=stat><strong>18</strong>filament runs</div></div><h2>Initial loading</h2><div class=slots><div class=slot><b>AMS Lite slot 1</b><span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></div><div class=slot><b>AMS Lite slot 2</b><span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></div><div class=slot><b>AMS Lite slot 3</b><span class=swatch style="background:#E34B4B"></span><span>V3 Red [PLA, #E34B4B]</span></div><div class=slot><b>AMS Lite slot 4</b><span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></div></div><h2>Chronological swap instructions</h2><p>Each position is before the next filament selection. These are hypothetical stops, not inserted pause commands.</p><div class=table><table><thead><tr><th>Stop / layer</th><th>Physical slot</th><th>Remove</th><th>Insert / next required</th><th>Position</th></tr></thead><tbody><tr><td><b>1 of 7</b><small>Layer 42</small></td><td>Slot 4</td><td><span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></td><td><span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></td><td>Move 400<small>G-code line ID 481</small></td></tr><tr><td><b>2 of 7</b><small>Layer 42</small></td><td>Slot 4</td><td><span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></td><td><span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></td><td>Move 600<small>G-code line ID 721</small></td></tr><tr><td><b>3 of 7</b><small>Layer 42</small></td><td>Slot 4</td><td><span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></td><td><span class=swatch style="background:#9755CE"></span><span>V7 Purple [PLA, #9755CE]</span></td><td>Move 800<small>G-code line ID 961</small></td></tr><tr><td><b>4 of 7</b><small>Layer 43</small></td><td>Slot 1</td><td><span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></td><td><span class=swatch style="background:#ED8736"></span><span>V8 Orange [PLA, #ED8736]</span></td><td>Move 1000<small>G-code line ID 1201</small></td></tr><tr><td><b>5 of 7</b><small>Layer 43</small></td><td>Slot 2</td><td><span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></td><td><span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></td><td>Move 1300<small>G-code line ID 1561</small></td></tr><tr><td><b>6 of 7</b><small>Layer 43</small></td><td>Slot 2</td><td><span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></td><td><span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></td><td>Move 1400<small>G-code line ID 1681</small></td></tr><tr><td><b>7 of 7</b><small>Layer 43</small></td><td>Slot 2</td><td><span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></td><td><span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></td><td>Move 1500<small>G-code line ID 1801</small></td></tr></tbody></table></div><footer>Belady farthest-next-use planning, with deterministic slot ties and replay verification. Material compatibility, purge, and printer behavior are not validated by this report. IDs shown as V1, V2, ... retain the original filament profiles.</footer></main></html>
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Extended AMS Lite - Batch swaps</title><style>
+*{box-sizing:border-box}body{font:16px/1.6 system-ui,sans-serif;background:#f3f5f4;color:#20342c;margin:0}
+main{max-width:1040px;margin:auto;padding:32px}h1{margin-bottom:8px}.notice{background:#fff2d8;padding:16px;border-radius:8px}
+.stats{font-size:22px;font-weight:650;margin:24px 0}.slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.slot{padding:16px;background:white;border:1px solid #d8e2dc;border-radius:10px}.slot b{display:block}.swatch{display:inline-block;width:16px;height:16px;border:1px solid #999;border-radius:50%;margin-right:6px}
+section{margin:28px 0;break-inside:avoid}.muted{color:#64776d}details{margin-top:28px}pre{white-space:pre-wrap;font-size:13px}
+@media print{body{background:white}main{padding:0}}</style><main><h1>Your batch swaps</h1><p>Replace the listed spools together at each visit.</p><div class=notice>Planning only. Automatic printing is unavailable: safe mid-print A1 AMS Lite unload, spool replacement, reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.</div><div class=stats>4 visits &nbsp; / &nbsp; 16 spool replacements &nbsp; / &nbsp; 28 color changes</div><p class=muted>Proposed layer order. Apply in Studio and re-slice before reviewing actual positions.</p><section><h2>Load these first</h2><div class=slots><div class=slot><b>Slot 1</b><span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></div><div class=slot><b>Slot 2</b><span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></div><div class=slot><b>Slot 3</b><span class=swatch style="background:#E34B4B"></span><span>V3 Red [PLA, #E34B4B]</span></div><div class=slot><b>Slot 4</b><span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></div></div></section><section><h2>Visit 1 of 4 &middot; Layer 1</h2><div class=slots><div class=slot><b>Slot 1</b><div class=muted>Remove <span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></div><div>Insert <span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></div></div><div class=slot><b>Slot 2</b><div class=muted>Remove <span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></div><div>Insert <span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></div></div><div class=slot><b>Slot 3</b><div class=muted>Remove <span class=swatch style="background:#E34B4B"></span><span>V3 Red [PLA, #E34B4B]</span></div><div>Insert <span class=swatch style="background:#9755CE"></span><span>V7 Purple [PLA, #9755CE]</span></div></div><div class=slot><b>Slot 4</b><div class=muted>Remove <span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></div><div>Insert <span class=swatch style="background:#ED8736"></span><span>V8 Orange [PLA, #ED8736]</span></div></div></div><p>Next color: <span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></p></section><section><h2>Visit 2 of 4 &middot; Layer 2</h2><div class=slots><div class=slot><b>Slot 1</b><div class=muted>Remove <span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></div><div>Insert <span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></div></div><div class=slot><b>Slot 2</b><div class=muted>Remove <span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></div><div>Insert <span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></div></div><div class=slot><b>Slot 3</b><div class=muted>Remove <span class=swatch style="background:#9755CE"></span><span>V7 Purple [PLA, #9755CE]</span></div><div>Insert <span class=swatch style="background:#E34B4B"></span><span>V3 Red [PLA, #E34B4B]</span></div></div><div class=slot><b>Slot 4</b><div class=muted>Remove <span class=swatch style="background:#ED8736"></span><span>V8 Orange [PLA, #ED8736]</span></div><div>Insert <span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></div></div></div><p>Next color: <span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></p></section><section><h2>Visit 3 of 4 &middot; Layer 3</h2><div class=slots><div class=slot><b>Slot 1</b><div class=muted>Remove <span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></div><div>Insert <span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></div></div><div class=slot><b>Slot 2</b><div class=muted>Remove <span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></div><div>Insert <span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></div></div><div class=slot><b>Slot 3</b><div class=muted>Remove <span class=swatch style="background:#E34B4B"></span><span>V3 Red [PLA, #E34B4B]</span></div><div>Insert <span class=swatch style="background:#9755CE"></span><span>V7 Purple [PLA, #9755CE]</span></div></div><div class=slot><b>Slot 4</b><div class=muted>Remove <span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></div><div>Insert <span class=swatch style="background:#ED8736"></span><span>V8 Orange [PLA, #ED8736]</span></div></div></div><p>Next color: <span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></p></section><section><h2>Visit 4 of 4 &middot; Layer 4</h2><div class=slots><div class=slot><b>Slot 1</b><div class=muted>Remove <span class=swatch style="background:#22A86A"></span><span>V5 Green [PLA, #22A86A]</span></div><div>Insert <span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></div></div><div class=slot><b>Slot 2</b><div class=muted>Remove <span class=swatch style="background:#F2C438"></span><span>V6 Yellow [PLA, #F2C438]</span></div><div>Insert <span class=swatch style="background:#2463EB"></span><span>V2 Blue [PLA, #2463EB]</span></div></div><div class=slot><b>Slot 3</b><div class=muted>Remove <span class=swatch style="background:#9755CE"></span><span>V7 Purple [PLA, #9755CE]</span></div><div>Insert <span class=swatch style="background:#E34B4B"></span><span>V3 Red [PLA, #E34B4B]</span></div></div><div class=slot><b>Slot 4</b><div class=muted>Remove <span class=swatch style="background:#ED8736"></span><span>V8 Orange [PLA, #ED8736]</span></div><div>Insert <span class=swatch style="background:#F5F5F5"></span><span>V4 White [PLA, #F5F5F5]</span></div></div></div><p>Next color: <span class=swatch style="background:#202020"></span><span>V1 Black [PLA, #202020]</span></p></section><details><summary>Full plan and fixed slot assignments</summary><pre>Extended AMS Lite - BATCH PLAN
+Planning only. Automatic printing is unavailable: safe mid-print A1 AMS Lite unload, spool replacement, reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.
+
+PROPOSED layer order. Apply in Studio and re-slice to obtain actual positions.
+Visits: 4; spool replacements: 16; color changes: 28
+
+Initial loading
+Slot 1: V1 Black [PLA, #202020]
+Slot 2: V2 Blue [PLA, #2463EB]
+Slot 3: V3 Red [PLA, #E34B4B]
+Slot 4: V4 White [PLA, #F5F5F5]
+
+Batch swaps (all listed slots at the same visit)
+
+Visit 1 of 4; layer 1
+Slot 1: remove V1 Black [PLA, #202020] -&gt; insert V5 Green [PLA, #22A86A]
+Slot 2: remove V2 Blue [PLA, #2463EB] -&gt; insert V6 Yellow [PLA, #F2C438]
+Slot 3: remove V3 Red [PLA, #E34B4B] -&gt; insert V7 Purple [PLA, #9755CE]
+Slot 4: remove V4 White [PLA, #F5F5F5] -&gt; insert V8 Orange [PLA, #ED8736]
+Next color: V6 Yellow [PLA, #F2C438]
+
+Visit 2 of 4; layer 2
+Slot 1: remove V5 Green [PLA, #22A86A] -&gt; insert V1 Black [PLA, #202020]
+Slot 2: remove V6 Yellow [PLA, #F2C438] -&gt; insert V2 Blue [PLA, #2463EB]
+Slot 3: remove V7 Purple [PLA, #9755CE] -&gt; insert V3 Red [PLA, #E34B4B]
+Slot 4: remove V8 Orange [PLA, #ED8736] -&gt; insert V4 White [PLA, #F5F5F5]
+Next color: V2 Blue [PLA, #2463EB]
+
+Visit 3 of 4; layer 3
+Slot 1: remove V1 Black [PLA, #202020] -&gt; insert V5 Green [PLA, #22A86A]
+Slot 2: remove V2 Blue [PLA, #2463EB] -&gt; insert V6 Yellow [PLA, #F2C438]
+Slot 3: remove V3 Red [PLA, #E34B4B] -&gt; insert V7 Purple [PLA, #9755CE]
+Slot 4: remove V4 White [PLA, #F5F5F5] -&gt; insert V8 Orange [PLA, #ED8736]
+Next color: V6 Yellow [PLA, #F2C438]
+
+Visit 4 of 4; layer 4
+Slot 1: remove V5 Green [PLA, #22A86A] -&gt; insert V1 Black [PLA, #202020]
+Slot 2: remove V6 Yellow [PLA, #F2C438] -&gt; insert V2 Blue [PLA, #2463EB]
+Slot 3: remove V7 Purple [PLA, #9755CE] -&gt; insert V3 Red [PLA, #E34B4B]
+Slot 4: remove V8 Orange [PLA, #ED8736] -&gt; insert V4 White [PLA, #F5F5F5]
+Next color: V1 Black [PLA, #202020]
+
+Proposed layer sequences (virtual filament numbers)
+Layer 1: V1 V2 V3 V4 V6 V7 V8 V5
+Layer 2: V5 V6 V7 V8 V2 V3 V4 V1
+Layer 3: V1 V2 V3 V4 V6 V7 V8 V5
+Layer 4: V5 V6 V7 V8 V1 V2 V3 V4
+
+Fixed slot assignment for this plan
+V1 -&gt; slot 1
+V2 -&gt; slot 2
+V3 -&gt; slot 3
+V4 -&gt; slot 4
+V5 -&gt; slot 1
+V6 -&gt; slot 2
+V7 -&gt; slot 3
+V8 -&gt; slot 4
+</pre></details></main></html>

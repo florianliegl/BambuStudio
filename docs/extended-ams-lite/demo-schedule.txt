@@ -1,7 +1,8 @@
-Extended AMS Lite Mode - DRY RUN
-Simulation only. Automatic printing is unavailable: A1 AMS Lite spool replacement, mapping changes during a paused print, safe unload/reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.
+Extended AMS Lite - BATCH PLAN
+Planning only. Automatic printing is unavailable: safe mid-print A1 AMS Lite unload, spool replacement, reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.
 
-Virtual filaments: 8; physical slots: 4; filament runs: 18; planned stops: 7
+PROPOSED layer order. Apply in Studio and re-slice to obtain actual positions.
+Visits: 4; spool replacements: 16; color changes: 28
 
 Initial loading
 Slot 1: V1 Black [PLA, #202020]
@@ -9,32 +10,48 @@ Slot 2: V2 Blue [PLA, #2463EB]
 Slot 3: V3 Red [PLA, #E34B4B]
 Slot 4: V4 White [PLA, #F5F5F5]
 
-Chronological swap schedule (positions are before filament selection, not executable pause points)
+Batch swaps (all listed slots at the same visit)
 
-Stop 1 of 7; Layer 42; move 400; G-code line ID 481
-Slot 4: remove V4 White [PLA, #F5F5F5] -> insert V5 Green [PLA, #22A86A]
-Next required: V5 Green [PLA, #22A86A]
+Visit 1 of 4; layer 1
+Slot 1: remove V1 Black [PLA, #202020] -> insert V5 Green [PLA, #22A86A]
+Slot 2: remove V2 Blue [PLA, #2463EB] -> insert V6 Yellow [PLA, #F2C438]
+Slot 3: remove V3 Red [PLA, #E34B4B] -> insert V7 Purple [PLA, #9755CE]
+Slot 4: remove V4 White [PLA, #F5F5F5] -> insert V8 Orange [PLA, #ED8736]
+Next color: V6 Yellow [PLA, #F2C438]
 
-Stop 2 of 7; Layer 42; move 600; G-code line ID 721
-Slot 4: remove V5 Green [PLA, #22A86A] -> insert V6 Yellow [PLA, #F2C438]
-Next required: V6 Yellow [PLA, #F2C438]
+Visit 2 of 4; layer 2
+Slot 1: remove V5 Green [PLA, #22A86A] -> insert V1 Black [PLA, #202020]
+Slot 2: remove V6 Yellow [PLA, #F2C438] -> insert V2 Blue [PLA, #2463EB]
+Slot 3: remove V7 Purple [PLA, #9755CE] -> insert V3 Red [PLA, #E34B4B]
+Slot 4: remove V8 Orange [PLA, #ED8736] -> insert V4 White [PLA, #F5F5F5]
+Next color: V2 Blue [PLA, #2463EB]
 
-Stop 3 of 7; Layer 42; move 800; G-code line ID 961
-Slot 4: remove V6 Yellow [PLA, #F2C438] -> insert V7 Purple [PLA, #9755CE]
-Next required: V7 Purple [PLA, #9755CE]
+Visit 3 of 4; layer 3
+Slot 1: remove V1 Black [PLA, #202020] -> insert V5 Green [PLA, #22A86A]
+Slot 2: remove V2 Blue [PLA, #2463EB] -> insert V6 Yellow [PLA, #F2C438]
+Slot 3: remove V3 Red [PLA, #E34B4B] -> insert V7 Purple [PLA, #9755CE]
+Slot 4: remove V4 White [PLA, #F5F5F5] -> insert V8 Orange [PLA, #ED8736]
+Next color: V6 Yellow [PLA, #F2C438]
 
-Stop 4 of 7; Layer 43; move 1000; G-code line ID 1201
-Slot 1: remove V1 Black [PLA, #202020] -> insert V8 Orange [PLA, #ED8736]
-Next required: V8 Orange [PLA, #ED8736]
+Visit 4 of 4; layer 4
+Slot 1: remove V5 Green [PLA, #22A86A] -> insert V1 Black [PLA, #202020]
+Slot 2: remove V6 Yellow [PLA, #F2C438] -> insert V2 Blue [PLA, #2463EB]
+Slot 3: remove V7 Purple [PLA, #9755CE] -> insert V3 Red [PLA, #E34B4B]
+Slot 4: remove V8 Orange [PLA, #ED8736] -> insert V4 White [PLA, #F5F5F5]
+Next color: V1 Black [PLA, #202020]
 
-Stop 5 of 7; Layer 43; move 1300; G-code line ID 1561
-Slot 2: remove V2 Blue [PLA, #2463EB] -> insert V4 White [PLA, #F5F5F5]
-Next required: V4 White [PLA, #F5F5F5]
+Proposed layer sequences (virtual filament numbers)
+Layer 1: V1 V2 V3 V4 V6 V7 V8 V5
+Layer 2: V5 V6 V7 V8 V2 V3 V4 V1
+Layer 3: V1 V2 V3 V4 V6 V7 V8 V5
+Layer 4: V5 V6 V7 V8 V1 V2 V3 V4
 
-Stop 6 of 7; Layer 43; move 1400; G-code line ID 1681
-Slot 2: remove V4 White [PLA, #F5F5F5] -> insert V5 Green [PLA, #22A86A]
-Next required: V5 Green [PLA, #22A86A]
-
-Stop 7 of 7; Layer 43; move 1500; G-code line ID 1801
-Slot 2: remove V5 Green [PLA, #22A86A] -> insert V6 Yellow [PLA, #F2C438]
-Next required: V6 Yellow [PLA, #F2C438]
+Fixed slot assignment for this plan
+V1 -> slot 1
+V2 -> slot 2
+V3 -> slot 3
+V4 -> slot 4
+V5 -> slot 1
+V6 -> slot 2
+V7 -> slot 3
+V8 -> slot 4

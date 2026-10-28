@@ -2,205 +2,238 @@
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
-
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/choice.h>
+#include <wx/collpane.h>
 #include <wx/file.h>
 #include <wx/filedlg.h>
-#include <wx/listctrl.h>
+#include <wx/listbox.h>
 #include <wx/msgdlg.h>
-#include <wx/scrolwin.h>
+#include <wx/panel.h>
+#include <wx/settings.h>
 #include <wx/sizer.h>
-#include <wx/spinctrl.h>
 #include <wx/stattext.h>
-#include <wx/textctrl.h>
-
+#include <algorithm>
 #include <mutex>
 #include <stdexcept>
-
 namespace Slic3r { namespace GUI {
 namespace AMS = ExtendedAMSLite;
-
-ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProcessorResult& result)
-    : DPIDialog(parent, wxID_ANY, _L("Extended AMS Lite Mode - Dry run"), wxDefaultPosition,
-                wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProcessorResult& result,
+    bool can_reorder, const std::vector<std::string>& names)
+    : DPIDialog(parent, wxID_ANY, _L("Extended AMS Lite"), wxDefaultPosition, wxDefaultSize,
+                wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER), m_can_reorder(can_reorder)
 {
-    // Copy a coherent slice snapshot. No callbacks retain references to a plate
-    // or background-processing result that could change while this dialog lives.
     {
         std::lock_guard<std::mutex> guard(result.result_mutex);
         if (!result.used_mixed_filaments.empty() || result.extruder_types.size() > 1)
-            throw std::invalid_argument("The AMS Lite planner currently supports single-extruder prints without mixed filaments. Select an A1 profile and re-slice.");
-        m_requests = AMS::collect_requests(result.moves, EMoveType::Tool_change, EMoveType::Extrude);
-        for (std::size_t i = 0; i < result.filaments_count; ++i) {
-            AMS::Filament filament;
-            filament.name = i < result.settings_ids.filament.size() ? result.settings_ids.filament[i] : "Virtual filament " + std::to_string(i + 1);
-            filament.material = i < result.filament_types.size() ? result.filament_types[i] : "Unknown material";
-            filament.color = i < result.extruder_colors.size() ? result.extruder_colors[i] : "#808080";
-            m_filaments.push_back(std::move(filament));
-        }
+            throw std::invalid_argument("Batch planning supports single-extruder prints without mixed filaments. Select an A1 profile and re-slice.");
+        m_requests = AMS::collect_requests(result.moves, EMoveType::Tool_change, EMoveType::Extrude, true);
+        for (std::size_t i = 0; i < result.filaments_count; ++i)
+            m_filaments.push_back({i < names.size() ? names[i] : (i < result.settings_ids.filament.size() ? result.settings_ids.filament[i] : "Filament " + std::to_string(i + 1)),
+                i < result.filament_types.size() ? result.filament_types[i] : "Unknown material",
+                i < result.extruder_colors.size() ? result.extruder_colors[i] : ""});
     }
-
     auto* root = new wxBoxSizer(wxVERTICAL);
-    auto* warning = new wxStaticText(this, wxID_ANY, wxString::FromUTF8(AMS::execution_blocker()));
-    warning->Wrap(82 * em_unit());
-    root->Add(warning, 0, wxEXPAND | wxALL, em_unit());
-
-    auto* count_row = new wxBoxSizer(wxHORIZONTAL);
-    count_row->Add(new wxStaticText(this, wxID_ANY, _L("Physical slots (standard AMS Lite: 4)")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, em_unit());
-    m_slot_count = new wxSpinCtrl(this, wxID_ANY, "4", wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS, 1, 32, 4);
-    count_row->Add(m_slot_count, 0);
-    auto* calculate_button = new wxButton(this, wxID_ANY, _L("Calculate swap schedule"));
-    count_row->Add(calculate_button, 0, wxLEFT, em_unit());
-    root->Add(count_row, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
-
-    root->Add(new wxStaticText(this, wxID_ANY, _L("Initial slot overrides: Auto chooses a filament; Lock keeps that filament in its slot.")), 0, wxLEFT | wxRIGHT, em_unit());
-    m_slot_panel = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 13 * em_unit()));
-    m_slot_panel->SetScrollRate(0, em_unit());
-    m_slot_sizer = new wxFlexGridSizer(3, em_unit() / 2, em_unit());
-    m_slot_sizer->AddGrowableCol(1);
-    m_slot_panel->SetSizer(m_slot_sizer);
-    root->Add(m_slot_panel, 0, wxEXPAND | wxALL, em_unit());
-    rebuild_slots();
-
+    auto* heading = new wxStaticText(this, wxID_ANY, _L("Fewer visits. Swap a whole batch together."));
+    heading->SetFont(heading->GetFont().Bold().Larger());
+    root->Add(heading, 0, wxALL, em_unit());
+    auto* status = new wxStaticText(this, wxID_ANY, _L("Planning and layer ordering are available. Printing with spool swaps still requires a verified A1 unload / pause / reload procedure."));
+    status->Wrap(85 * em_unit());
+    root->Add(status, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    m_optimize = new wxCheckBox(this, wxID_ANY, _L("Optimize layers: keep the loaded batch for the next layer"));
+    m_optimize->SetValue(can_reorder);
+    m_optimize->Enable(can_reorder);
+    m_optimize->SetToolTip(_L("Reordering requires an editable project printing by layer. Imported G-code can only be analyzed."));
+    root->Add(m_optimize, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
     m_summary = new wxStaticText(this, wxID_ANY, wxEmptyString);
-    root->Add(m_summary, 0, wxEXPAND | wxLEFT | wxRIGHT, em_unit());
-    m_initial_text = new wxTextCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition,
-                                   wxSize(-1, 7 * em_unit()), wxTE_MULTILINE | wxTE_READONLY);
-    root->Add(m_initial_text, 0, wxEXPAND | wxALL, em_unit());
-    m_schedule = new wxListCtrl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxLC_REPORT | wxLC_SINGLE_SEL);
-    const wxString columns[] = {_L("Planned stop"), _L("Layer"), _L("Slot"), _L("Remove"), _L("Insert / next required"), _L("Move"), _L("G-code line ID")};
-    const int widths[] = {9, 8, 5, 25, 25, 8, 12};
-    for (int i = 0; i < 7; ++i)
-        m_schedule->InsertColumn(i, columns[i], wxLIST_FORMAT_LEFT, widths[i] * em_unit());
-    root->Add(m_schedule, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    m_summary->SetFont(m_summary->GetFont().Bold());
+    root->Add(m_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    root->Add(new wxStaticText(this, wxID_ANY, _L("Load these first")), 0, wxLEFT | wxRIGHT, em_unit());
+    auto* loading = new wxBoxSizer(wxHORIZONTAL);
+    for (std::size_t s = 0; s < 4; ++s) m_loading[s] = make_card(loading, wxString::Format(_L("Slot %d"), int(s + 1)));
+    root->Add(loading, 0, wxEXPAND | wxALL, em_unit());
+    m_visits = new wxChoice(this, wxID_ANY);
+    root->Add(m_visits, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    auto* changes = new wxBoxSizer(wxHORIZONTAL);
+    for (std::size_t s = 0; s < 4; ++s) m_changes[s] = make_card(changes, wxString::Format(_L("Slot %d"), int(s + 1)));
+    root->Add(changes, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    m_detail = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    root->Add(m_detail, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    auto* advanced = new wxCollapsiblePane(this, wxID_ANY, _L("First-layer order and slot settings"), wxDefaultPosition, wxDefaultSize, wxCP_DEFAULT_STYLE | wxCP_NO_TLW_RESIZE);
+    auto* pane = advanced->GetPane();
+    auto* settings = new wxBoxSizer(wxVERTICAL);
+    m_manual = new wxCheckBox(pane, wxID_ANY, _L("Use my first-layer order (select a color, then move it up or down)"));
+    m_manual->Enable(can_reorder);
+    settings->Add(m_manual, 0, wxALL, em_unit() / 2);
+    auto* order_row = new wxBoxSizer(wxHORIZONTAL);
+    m_order = new wxListBox(pane, wxID_ANY, wxDefaultPosition, wxSize(-1, 8 * em_unit()));
+    const auto first = std::find_if(m_requests.begin(), m_requests.end(), [](const AMS::Request& r) { return r.layer > 0; });
+    if (first != m_requests.end()) for (const auto& r : m_requests) {
+        if (r.layer != first->layer || std::find(m_order_ids.begin(), m_order_ids.end(), r.filament) != m_order_ids.end()) continue;
+        m_order_ids.push_back(r.filament);
+        m_order->Append(filament_label(r.filament));
+    }
+    m_order->Enable(false);
+    order_row->Add(m_order, 1, wxEXPAND);
+    auto* arrows = new wxBoxSizer(wxVERTICAL);
+    auto* up = new wxButton(pane, wxID_ANY, _L("Up"));
+    auto* down = new wxButton(pane, wxID_ANY, _L("Down"));
+    arrows->Add(up, 0, wxALL, em_unit() / 2);
+    arrows->Add(down, 0, wxALL, em_unit() / 2);
+    order_row->Add(arrows, 0);
+    settings->Add(order_row, 0, wxEXPAND | wxALL, em_unit() / 2);
+    settings->Add(new wxStaticText(pane, wxID_ANY, _L("Auto chooses the initial color. Lock keeps that spool loaded throughout the job.")), 0, wxALL, em_unit() / 2);
+    auto* grid = new wxFlexGridSizer(3, em_unit() / 2, em_unit());
+    grid->AddGrowableCol(1);
+    for (std::size_t s = 0; s < 4; ++s) {
+        grid->Add(new wxStaticText(pane, wxID_ANY, wxString::Format(_L("Slot %d"), int(s + 1))), 0, wxALIGN_CENTER_VERTICAL);
+        m_initial[s] = new wxChoice(pane, wxID_ANY);
+        m_initial[s]->Append(_L("Auto"));
+        for (std::size_t id = 0; id < m_filaments.size(); ++id) m_initial[s]->Append(filament_label(int(id)));
+        m_initial[s]->SetSelection(0);
+        grid->Add(m_initial[s], 1, wxEXPAND);
+        m_locked[s] = new wxCheckBox(pane, wxID_ANY, _L("Lock"));
+        grid->Add(m_locked[s], 0, wxALIGN_CENTER_VERTICAL);
+        m_initial[s]->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { calculate(); });
+        m_locked[s]->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { calculate(); });
+    }
+    settings->Add(grid, 0, wxEXPAND | wxALL, em_unit() / 2);
+    pane->SetSizer(settings);
+    root->Add(advanced, 0, wxEXPAND | wxLEFT | wxRIGHT, em_unit());
     auto* buttons = new wxBoxSizer(wxHORIZONTAL);
-    m_export = new wxButton(this, wxID_ANY, _L("Export schedule..."));
+    m_export = new wxButton(this, wxID_ANY, _L("Export plan..."));
+    m_apply = new wxButton(this, wxID_APPLY, _L("Apply order && slice"));
     buttons->Add(m_export, 0);
     buttons->AddStretchSpacer();
+    buttons->Add(m_apply, 0, wxRIGHT, em_unit());
     buttons->Add(new wxButton(this, wxID_CANCEL, _L("Close")), 0);
     root->Add(buttons, 0, wxEXPAND | wxALL, em_unit());
     SetSizer(root);
-    SetSize(wxSize(100 * em_unit(), 65 * em_unit()));
-    SetMinSize(wxSize(70 * em_unit(), 50 * em_unit()));
+    SetMinSize(wxSize(88 * em_unit(), 57 * em_unit()));
+    SetSize(wxSize(94 * em_unit(), 60 * em_unit()));
     wxGetApp().UpdateDarkUI(this);
     CenterOnParent();
-
-    m_slot_count->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent&) { rebuild_slots(); invalidate(); });
-    m_slot_count->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { rebuild_slots(); invalidate(); });
-    calculate_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { calculate(); });
+    advanced->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this](wxCollapsiblePaneEvent&) { GetSizer()->Fit(this); Layout(); });
+    m_optimize->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        if (!m_optimize->GetValue()) { m_manual->SetValue(false); m_order->Disable(); }
+        calculate();
+    });
+    m_manual->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { if (m_manual->GetValue()) m_optimize->SetValue(true); m_order->Enable(m_manual->GetValue()); calculate(); });
+    up->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { move_color(-1); });
+    down->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { move_color(1); });
+    m_visits->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { show_visit(); });
     m_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { export_schedule(); });
+    m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (m_valid && m_plan.reordered && m_can_reorder) EndModal(wxID_APPLY); });
     calculate();
 }
-
+ExtendedAMSLiteDialog::Card ExtendedAMSLiteDialog::make_card(wxSizer* row, const wxString& title)
+{
+    auto* panel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+    auto* box = new wxBoxSizer(wxVERTICAL);
+    auto* top = new wxBoxSizer(wxHORIZONTAL);
+    auto* color = new wxPanel(panel, wxID_ANY, wxDefaultPosition, wxSize(2 * em_unit(), 2 * em_unit()), wxBORDER_SIMPLE);
+    top->Add(color, 0, wxRIGHT, em_unit() / 2);
+    auto* heading = new wxStaticText(panel, wxID_ANY, title);
+    heading->SetFont(heading->GetFont().Bold());
+    top->Add(heading, 0, wxALIGN_CENTER_VERTICAL);
+    box->Add(top, 0, wxALL, em_unit());
+    auto* text = new wxStaticText(panel, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(18 * em_unit(), 9 * em_unit()));
+    box->Add(text, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    panel->SetSizer(box);
+    row->Add(panel, 1, wxEXPAND | wxRIGHT, em_unit() / 2);
+    return {color, text};
+}
 wxString ExtendedAMSLiteDialog::filament_label(int id) const
 {
-    if (id < 0)
-        return _L("Empty");
-    const auto& filament = m_filaments.at(std::size_t(id));
-    return wxString::FromUTF8("V" + std::to_string(id + 1) + " " + filament.name + " [" + filament.material + ", " + filament.color + "]");
+    if (id < 0) return _L("Empty");
+    const auto& f = m_filaments.at(std::size_t(id));
+    return wxString::FromUTF8("V" + std::to_string(id + 1) + " " + AMS::color_name(f.color) + " / " + f.material + " / " + f.color);
 }
-
-void ExtendedAMSLiteDialog::rebuild_slots()
+void ExtendedAMSLiteDialog::set_card(Card& card, int id, const wxString& text)
 {
-    const int count = m_slot_count->GetValue();
-    if (count == static_cast<int>(m_initial.size()))
-        return;
-    m_slot_sizer->Clear(true);
-    m_initial.clear();
-    m_locked.clear();
-    for (int s = 0; s < count; ++s) {
-        m_slot_sizer->Add(new wxStaticText(m_slot_panel, wxID_ANY, wxString::Format(_L("Slot %d"), s + 1)), 0, wxALIGN_CENTER_VERTICAL);
-        auto* choice = new wxChoice(m_slot_panel, wxID_ANY);
-        choice->Append(_L("Auto"));
-        for (std::size_t i = 0; i < m_filaments.size(); ++i)
-            choice->Append(filament_label(static_cast<int>(i)));
-        choice->SetSelection(0);
-        m_slot_sizer->Add(choice, 1, wxEXPAND);
-        m_initial.push_back(choice);
-        auto* locked = new wxCheckBox(m_slot_panel, wxID_ANY, _L("Lock"));
-        m_slot_sizer->Add(locked, 0, wxALIGN_CENTER_VERTICAL);
-        m_locked.push_back(locked);
-        choice->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { invalidate(); });
-        locked->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { invalidate(); });
-    }
-    m_slot_panel->FitInside();
-    m_slot_panel->Layout();
+    card.text->SetLabel(text);
+    card.text->Wrap(18 * em_unit());
+    wxColour color = wxSystemSettings::GetColour(wxSYS_COLOUR_BTNFACE);
+    if (id >= 0 && AMS::color_name(m_filaments.at(std::size_t(id)).color) != "Unknown color")
+        color = wxColour(wxString::FromUTF8(m_filaments.at(std::size_t(id)).color.substr(0, 7)));
+    card.color->SetBackgroundColour(color);
+    card.color->SetToolTip(id >= 0 ? wxString::FromUTF8(m_filaments.at(std::size_t(id)).name) : wxEmptyString);
+    card.color->Refresh();
 }
-
-void ExtendedAMSLiteDialog::invalidate()
-{
-    m_export_text.clear();
-    m_export_html.clear();
-    m_export->Disable();
-    m_schedule->DeleteAllItems();
-    m_initial_text->Clear();
-    m_summary->SetLabel(_L("Configuration changed. Calculate the swap schedule again."));
-}
-
 void ExtendedAMSLiteDialog::calculate()
 {
-    invalidate();
+    m_valid = false;
+    m_export->Disable();
+    m_apply->Disable();
+    m_visits->Clear();
+    for (auto& card : m_loading) set_card(card, -1, _L("Recalculating..."));
+    for (auto& card : m_changes) set_card(card, -1, wxEmptyString);
     try {
         std::vector<AMS::Slot> slots;
-        for (std::size_t s = 0; s < m_initial.size(); ++s)
-            slots.push_back({m_initial[s]->GetSelection() - 1, m_locked[s]->GetValue()});
-        const AMS::Plan result = AMS::plan(m_requests, m_filaments.size(), slots);
-        m_export_text = AMS::format_schedule(m_filaments, m_requests, result);
-        m_export_html = AMS::format_schedule_html(m_filaments, m_requests, result);
-        wxString initial = _L("Initial loading (simulation):\n");
-        for (std::size_t s = 0; s < result.initial_slots.size(); ++s)
-            initial += wxString::Format(_L("Slot %d: "), static_cast<int>(s + 1)) + filament_label(result.initial_slots[s]) + "\n";
-        m_initial_text->SetValue(initial);
-        m_summary->SetLabel(wxString::Format(_L("Dry run: %d filament runs, %d planned stops. No G-code changes."),
-                                           static_cast<int>(m_requests.size()), static_cast<int>(result.stops.size())));
-        for (std::size_t i = 0; i < result.stops.size(); ++i) {
-            const auto& stop = result.stops[i];
-            const auto& request = m_requests[stop.before_request];
-            for (const auto& replacement : stop.replacements) {
-                const long row = m_schedule->InsertItem(m_schedule->GetItemCount(), wxString::Format("%d / %d", static_cast<int>(i + 1), static_cast<int>(result.stops.size())));
-                m_schedule->SetItem(row, 1, request.layer ? wxString::Format("%u", request.layer) : _L("Startup/?"));
-                m_schedule->SetItem(row, 2, wxString::Format("%d", static_cast<int>(replacement.slot + 1)));
-                m_schedule->SetItem(row, 3, filament_label(replacement.remove));
-                m_schedule->SetItem(row, 4, filament_label(replacement.insert));
-                m_schedule->SetItem(row, 5, wxString::Format("%llu", static_cast<unsigned long long>(request.move)));
-                m_schedule->SetItem(row, 6, wxString::Format("%u", request.gcode_line));
-                const wxColour color(wxString::FromUTF8(m_filaments[replacement.insert].color));
-                if (color.IsOk()) {
-                    m_schedule->SetItemBackgroundColour(row, color);
-                    m_schedule->SetItemTextColour(row, (299 * color.Red() + 587 * color.Green() + 114 * color.Blue() > 128000) ? *wxBLACK : *wxWHITE);
-                }
-            }
+        for (std::size_t s = 0; s < 4; ++s) slots.push_back({m_initial[s]->GetSelection() - 1, m_locked[s]->GetValue()});
+        m_plan = AMS::plan_batches(m_requests, m_filaments.size(), slots, m_manual->GetValue() ? m_order_ids : std::vector<int>{}, m_optimize->GetValue());
+        for (std::size_t s = 0; s < 4; ++s) set_card(m_loading[s], m_plan.schedule.initial_slots[s], filament_label(m_plan.schedule.initial_slots[s]));
+        m_summary->SetLabel(wxString::Format(_L("%d visits  /  %d spool replacements  /  %d color changes"), int(m_plan.schedule.stops.size()), int(m_plan.spool_replacements), int(m_plan.color_changes)));
+        for (std::size_t i = 0; i < m_plan.schedule.stops.size(); ++i) {
+            const auto& stop = m_plan.schedule.stops[i];
+            const auto& r = m_plan.requests[stop.before_request];
+            m_visits->Append(wxString::Format(_L("Visit %d of %d - Layer %u - swap %d spools together"), int(i + 1), int(m_plan.schedule.stops.size()), r.layer, int(stop.replacements.size())));
         }
+        if (m_plan.schedule.stops.empty()) m_visits->Append(_L("No spool swaps required"));
+        m_visits->SetSelection(0);
+        m_valid = true;
         m_export->Enable();
+        m_apply->Enable(m_plan.reordered && m_can_reorder);
+        show_visit();
     } catch (const std::exception& error) {
         m_summary->SetLabel(wxString::FromUTF8(error.what()));
         m_summary->Wrap(85 * em_unit());
+        m_detail->SetLabel(_L("Change the slot settings and try again."));
     }
     Layout();
 }
-
+void ExtendedAMSLiteDialog::show_visit()
+{
+    if (!m_valid) return;
+    for (auto& card : m_changes) set_card(card, -1, _L("Keep loaded"));
+    if (m_plan.schedule.stops.empty()) { m_detail->SetLabel(_L("All required colors fit in the four slots.")); return; }
+    const auto& stop = m_plan.schedule.stops.at(std::size_t(m_visits->GetSelection()));
+    const auto& r = m_plan.requests[stop.before_request];
+    for (const auto& c : stop.replacements)
+        set_card(m_changes[c.slot], c.insert, _L("Remove: ") + filament_label(c.remove) + "\n" + _L("Insert: ") + filament_label(c.insert));
+    wxString detail = _L("Next: ") + filament_label(r.filament);
+    detail += m_plan.reordered ? _L("\nProposed order. Apply and re-slice, then reopen this plan to check the actual slice.") : wxString::Format(_L("\nCurrent slice: move %llu, G-code line ID %u. Pauses are not inserted."), static_cast<unsigned long long>(r.move), r.gcode_line);
+    m_detail->SetLabel(detail);
+    m_detail->Wrap(85 * em_unit());
+    Layout();
+}
+void ExtendedAMSLiteDialog::move_color(int direction)
+{
+    if (!m_manual->GetValue()) return;
+    const int selected = m_order->GetSelection(), next = selected + direction;
+    if (selected < 0 || next < 0 || next >= int(m_order_ids.size())) return;
+    std::swap(m_order_ids[selected], m_order_ids[next]);
+    m_order->SetString(selected, filament_label(m_order_ids[selected]));
+    m_order->SetString(next, filament_label(m_order_ids[next]));
+    m_order->SetSelection(next);
+    calculate();
+}
 void ExtendedAMSLiteDialog::export_schedule()
 {
-    if (m_export_text.empty())
-        return;
-    wxFileDialog dialog(this, _L("Export dry-run swap schedule"), wxEmptyString, "extended-ams-lite-schedule",
-                        _L("Text files (*.txt)|*.txt|HTML files (*.html)|*.html"), wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
-    if (dialog.ShowModal() != wxID_OK)
-        return;
+    if (!m_valid) return;
+    wxFileDialog dialog(this, _L("Export batch plan"), wxEmptyString, "extended-ams-lite-batches", _L("HTML files (*.html)|*.html|Text files (*.txt)|*.txt"), wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (dialog.ShowModal() != wxID_OK) return;
+    const std::string content = dialog.GetFilterIndex() == 0 ? AMS::format_batch_schedule_html(m_filaments, m_plan) : AMS::format_batch_schedule(m_filaments, m_plan);
     wxFile file(dialog.GetPath(), wxFile::write);
-    const auto& contents = dialog.GetFilterIndex() == 1 ? m_export_html : m_export_text;
-    if (!file.IsOpened() || !file.Write(wxString::FromUTF8(contents), wxConvUTF8) || !file.Close())
-        wxMessageBox(_L("Could not write the swap schedule."), _L("Export failed"), wxOK | wxICON_ERROR, this);
+    if (!file.IsOpened() || !file.Write(wxString::FromUTF8(content), wxConvUTF8) || !file.Close())
+        wxMessageBox(_L("Could not write the batch plan."), _L("Export failed"), wxOK | wxICON_ERROR, this);
 }
-
 void ExtendedAMSLiteDialog::on_dpi_changed(const wxRect& suggested_rect)
 {
-    SetMinSize(wxSize(70 * em_unit(), 50 * em_unit()));
+    SetMinSize(wxSize(88 * em_unit(), 57 * em_unit()));
     SetSize(suggested_rect);
     Layout();
     Refresh();
 }
-
-}} // namespace Slic3r::GUI
+}}

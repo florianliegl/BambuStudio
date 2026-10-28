@@ -9,5 +9,5 @@ if not exist "%amsApp%" (
     exit /b 1
 )
 rem Keep this test application's settings separate from the installed Studio.
-start "Extended AMS Lite - Dry run" /D "%amsRoot%build\extended-ams-app\src\Release" "%amsApp%" --datadir "%amsRoot%build\extended-ams-userdata" %*
+start "Extended AMS Lite" /D "%amsRoot%build\extended-ams-app\src\Release" "%amsApp%" --datadir "%amsRoot%build\extended-ams-userdata" %*
 exit /b 0
