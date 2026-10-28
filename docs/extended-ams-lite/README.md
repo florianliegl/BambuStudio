@@ -1,9 +1,32 @@
 # Extended AMS Lite Mode
 
 This branch implements a **dry-run planning milestone**, not executable 8-color
-A1 printing. The standalone C++ planner is compiled and tested. The Bambu Studio
-Preview integration is implemented in source but has not been built or visually
-validated in this environment because the application dependencies are missing.
+A1 printing. The Windows application is now built locally and has been launched
+successfully to its normal Setup Wizard. The standalone planner and real G-code
+processor integration checks pass. The complete import/slice/Preview interaction
+still needs manual validation after first-run setup; it is not claimed as tested.
+
+## Use the local Windows build
+
+In PowerShell, from this repository:
+
+```powershell
+.\Run-Extended-AMS-Lite.cmd
+```
+
+The application is already open at the Setup Wizard in this session. Click
+**Get Started**, select the A1 during setup, and open your existing eight-color
+3MF as a project. Slice it, switch to **Preview**, enable **Extended AMS Lite Mode
+(dry run)**, and choose **View swap schedule...**. Keep physical slots at 4 for
+standard AMS Lite. This calculates a schedule for your own slice; the separate
+demo executable always uses its fixed synthetic example.
+
+The launcher uses a separate configuration directory at
+`build/extended-ams-userdata`. The executable is
+`build/extended-ams-app/src/Release/bambu-studio.exe`; its resource junction and
+runtime DLLs must remain in place. No installer is needed for this local build.
+Do not send an eight-color/four-slot job based on this planner: automatic pause,
+spool-handling and mapping execution are still unavailable.
 
 Base verified on 2026-10-28 using the official GitHub releases API:
 [`v02.08.02.61`](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61),
@@ -22,9 +45,9 @@ Feature branch: `codex/extended-ams-lite`.
 | Initial assignments and locked slots | Implemented; invalid or impossible configurations produce errors |
 | Repeated colors and switches within a layer | Supported by the planner |
 | Independent replay verification | Checks availability at every filament run and all replacements |
-| Preview toggle and configuration dialog | Source implemented; full build and UI validation pending |
-| Color/material labels and chronological table | Source implemented; consumes sliced metadata |
-| Text and HTML export | Core formatter tested; GUI file dialog requires full app validation |
+| Preview toggle and configuration dialog | Compiled into the Windows app; full interaction validation pending |
+| Color/material labels and chronological table | Compiled; consumes sliced metadata; full UI validation pending |
+| Text and HTML export | Core formatter tested; GUI file dialog validation pending |
 | Grouped replacements | Plan model, verifier, and presentation support groups; optimizer currently emits one demand replacement per stop |
 | Executable pause generation and AMS remapping | **Unavailable; no execution backend** |
 | Live swap notifications / Handy custom messages | **Unavailable; no verified event-to-swap correlation** |
@@ -36,7 +59,7 @@ overrides are local to the schedule dialog; changing the slot count clears them.
 The dialog snapshots the current result so a schedule cannot silently change
 under the user. Re-slice and reopen it after changing the model or profiles.
 
-## Workflow after a full application build
+## Planning workflow
 
 1. Select the normal A1 printer profile. Add eight or more virtual filaments in
    Prepare, choose their profiles/colors/materials, and paint normally.
@@ -123,10 +146,10 @@ deterministic randomized replays. Checks run in Release builds as well as Debug.
 
 `tests/libslic3r/test_extended_ams_lite.cpp` additionally uses the **real**
 `GCodeProcessor` with eight virtual filaments mapped to one extruder, tests the
-retained layer IDs, and checks result copy/reset. This is registered with the
-existing `libslic3r_tests`; it cannot run without full application dependencies.
-The standalone trace test uses a fixture with the same fields and is not a
-substitute for that integration test.
+retained layer IDs, and checks result copy/reset. It is built as the dedicated
+`extended_ams_lite_integration` target when full dependencies are available.
+**All 35 assertions pass locally.** The standalone trace test uses a fixture
+with the same fields and is separate from this real integration test.
 
 Local Release result: **21,538 checks passed**, including all exhaustive and
 randomized cases above. The exported demo is available as
@@ -145,12 +168,12 @@ prerequisites in that guide, then use the repository's build script:
 ```
 
 Build the dependency tree first if using CMake directly; pass its install prefix
-through `CMAKE_PREFIX_PATH`. The local attempt used VS 2022/MSVC 19.44 and CMake
-3.31. Configuration stopped at `CMakeLists.txt:411`: Boost >= 1.83 and its system,
-filesystem, thread, log, locale, regex, chrono, atomic, date_time, and iostreams
-components are missing. Later dependencies, linking, packaging and UI operation
-have not been tested. No custom Studio installer is supplied. Building an
-upstream binary does not retrofit this feature into the installed application.
+through `CMAKE_PREFIX_PATH`. The local VS 2022/MSVC 19.44 and CMake 3.31 build
+uses the official stable dependency bundle, relocated metadata, and five locally
+rebuilt libraries to match the installed compiler. See
+[WINDOWS-BUILD.md](WINDOWS-BUILD.md) for provenance and commands. The application
+and runtime DLL copy targets now build successfully. No custom installer or
+self-contained distribution package is supplied.
 
 After dependencies are installed, enable the normal test build and run the
 integration test (adapt the dependency prefix to your actual build):
@@ -158,12 +181,19 @@ integration test (adapt the dependency prefix to your actual build):
 ```powershell
 cmake -S . -B build/extended-ams-app -A x64 `
   -DCMAKE_PREFIX_PATH=C:/path/to/dependencies/usr/local -DSLIC3R_BUILD_TESTS=ON
-cmake --build build/extended-ams-app --config Release --target BambuStudio_app_gui libslic3r_tests
-ctest --test-dir build/extended-ams-app -C Release --output-on-failure
+cmake --build build/extended-ams-app --config Release `
+  --target BambuStudio_app_gui BambuStudioDllsCopy extended_ams_lite_integration
+# Set PATH to the dependency bin and bin/occt directories before this test:
+ctest --test-dir build/extended-ams-app -C Release -R '^extended_ams_lite_integration$' --output-on-failure
 ```
 
-Install only from a successfully built/package-tested custom artifact. Keep the
-official Studio install until the custom build has passed regression checks.
+The upstream aggregate tests currently have unrelated OBJ/rotation/raster API
+compile errors; those regressions are not claimed as passing. The dedicated
+integration target avoids modifying those older tests. The build also emits
+upstream warnings, including a `LIBCMT`/CRT default-library conflict warning;
+it is not a warning-free or release-certified build.
+
+Keep the official Studio install until the custom build has passed regression checks.
 The added GitHub Actions workflow builds/tests the standalone planner on
 Windows, Linux and macOS; it does not claim to build the GUI or validate firmware.
 

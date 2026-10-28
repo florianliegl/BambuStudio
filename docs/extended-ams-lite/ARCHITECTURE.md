@@ -86,7 +86,9 @@ after completing a verified load procedure.
 - `src/slic3r/GUI/GUI_Preview.cpp`: add an off-by-default dry-run toggle and dialog
   launcher, refusing unsliced or stale current plates.
 - `tests/CMakeLists.txt`: register the dependency-free planner tests.
-- `tests/libslic3r/CMakeLists.txt`: register the real processor integration test.
+- `tests/extended_ams_lite/CMakeLists.txt`: register the standalone tests and a
+  separate real-processor integration executable. The upstream aggregate tests
+  have unrelated compile failures on this release.
 
 New core, GUI, tests, workflow, and documentation live in separate files. There
 are no changes to firmware, printer profiles, send jobs, tool ordering, purge,
@@ -98,8 +100,12 @@ the planner UI is off; it does not affect generated motion or mapping.
 1. **Software dry run (available now):** compile and run the standalone tests
    and demo. Inspect the initial four slots and all seven demo swaps. No printer
    needs to be connected.
-2. **Application validation (pending full dependencies):** build the application
-   and real processor test. Slice a small eight-color model; compare every
+2. **Application validation (partially complete):** the Windows application and
+   real processor test build; all 35 integration assertions pass. Application
+   startup was visually checked to the normal Setup Wizard. Its embedded buttons
+   were not operable through the available native UI automation, so first-run
+   setup and the complete model/Preview workflow need manual validation.
+   Slice a small eight-color model; compare every
    planned request with Preview's tool-change order and exported G-code, including
    purge and startup. Reopen after re-slicing and changing plates. Check unknown
    material metadata, duplicate assignments, locks, dark mode, DPI, large reports,
