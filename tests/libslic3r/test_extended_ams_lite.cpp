@@ -206,8 +206,10 @@ TEST_CASE("Real slicing honors eight-color batch layer orders", "[ExtendedAMSLit
     CHECK(processed.pause_printing.empty());
 }
 
-TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one", "[ExtendedAMSLite][HardwareProbe]")
+TEST_CASE("A1 attended replacement probes preserve native tool-change recovery", "[ExtendedAMSLite][HardwareProbe]")
 {
+    const bool active_unload = GENERATE(false, true);
+    INFO((active_unload ? "Experimental active unload before one pause" : "Previously tested inactive-slot replacement"));
     namespace fs = boost::filesystem;
     const auto resources = fs::path(TEST_DATA_DIR).parent_path().parent_path() / "resources";
     REQUIRE(fs::exists(resources / "profiles" / "BBL.json"));
@@ -218,34 +220,67 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     REQUIRE(presets.printers.select_preset_by_name("Bambu Lab A1 0.2 nozzle", true, true));
     REQUIRE(presets.prints.select_preset_by_name("0.10mm Standard @BBL A1 0.2 nozzle", true, true));
     REQUIRE(presets.filaments.select_preset_by_name("Generic PLA @BBL A1 0.2 nozzle", true, true));
-    presets.filament_presets.assign(2, "Generic PLA @BBL A1 0.2 nozzle");
-    presets.set_num_filaments(2);
-    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings({"#E34B4B", "#2463EB"}));
+    const int filament_count = active_unload ? 4 : 2;
+    presets.filament_presets.assign(filament_count, "Generic PLA @BBL A1 0.2 nozzle");
+    presets.set_num_filaments(filament_count);
+    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings(active_unload ?
+        std::vector<std::string>{"#E34B4B", "#2463EB", "#22A86A", "#F2C438"} :
+        std::vector<std::string>{"#E34B4B", "#2463EB"}));
     auto config = presets.full_config();
     config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPTE));
     config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(0.1));
     config.set_key_value("layer_height", new ConfigOptionFloat(0.1));
-    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats({0., 160., 160., 0.}));
+    std::vector<double> flush_matrix(filament_count * filament_count, 160.);
+    for (int i = 0; i < filament_count; ++i) flush_matrix[i * filament_count + i] = 0.;
+    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(flush_matrix));
     REQUIRE(config.opt_string("printer_settings_id") == "Bambu Lab A1 0.2 nozzle");
     REQUIRE(config.option<ConfigOptionFloats>("nozzle_diameter")->values.front() == Approx(0.2));
     REQUIRE(config.opt_string("machine_pause_gcode") == "M400 U1");
     REQUIRE(config.opt_string("change_filament_gcode").find("M620 S[next_extruder]A") != std::string::npos);
+    if (active_unload) {
+        // An attended hardware probe, not an enabled batch execution backend.
+        // Reuse only the exact A1 profile unload block; never insert its heater
+        // shutdown, motor-current changes, timelapse shutdown or final parking.
+        const auto end = config.opt_string("machine_end_gcode");
+        const auto start = end.find("M620 S255\n");
+        const auto finish = end.find("M621 S255", start);
+        REQUIRE(start != std::string::npos);
+        REQUIRE(finish != std::string::npos);
+        const auto unload = end.substr(start, finish + std::string("M621 S255").size() - start);
+        REQUIRE(unload.find("\nT255\n") != std::string::npos);
+        REQUIRE(unload.find("M104") == std::string::npos);
+        REQUIRE(unload.find("M140") == std::string::npos);
+        REQUIRE(unload.find("M17") == std::string::npos);
+        // At a layer pause the prime tower may still extrude the old color.
+        // Insert at the actual 1->2 tool-change boundary instead, after that
+        // old-color tower wall. The native macro then loads/purges normally.
+        const auto ordinary_change = config.opt_string("change_filament_gcode");
+        config.set_key_value("change_filament_gcode", new ConfigOptionString(
+            "{if layer_z > 0.35 && layer_z < 0.45 && next_extruder == 1}\n;" +
+            GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) +
+            "\n; AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN\nM400\nG90\nG1 Z{max_layer_z + 3.0} F1200\n" +
+            unload + "\nM400\n; AMS_LITE_ACTIVE_UNLOAD_PROBE_END\nM400 U1\n{endif}\n" + ordinary_change));
+    }
 
     Model model;
     auto* object = model.add_object();
-    object->name = "AMS Lite one-swap test - slot 1, slot 2, replacement in slot 1";
-    for (int band = 0; band < 3; ++band) {
+    object->name = active_unload ? "EXPERIMENTAL - unload slot 1, replace all four, then print slots 2, 3, 4, 1" :
+        "AMS Lite one-swap test - slot 1, slot 2, replacement in slot 1";
+    for (int band = 0; band < (active_unload ? 5 : 3); ++band) {
         TriangleMesh mesh = make_cube(12, 8, 0.3);
         mesh.translate(122.f, 124.f, float(band) * 0.3f);
         auto* volume = object->add_volume(std::move(mesh));
-        volume->name = band == 0 ? "Bottom - slot 1 original" : band == 1 ? "Middle - slot 2 unchanged" : "Top - slot 1 replacement";
-        volume->config.set("extruder", band == 1 ? 2 : 1);
+        volume->name = active_unload ? (band == 0 ? "Bottom - slot 1 original" :
+            "Replacement - slot " + std::to_string(band % 4 + 1)) :
+            (band == 0 ? "Bottom - slot 1 original" : band == 1 ? "Middle - slot 2 unchanged" : "Top - slot 1 replacement");
+        volume->config.set("extruder", active_unload ? band % 4 + 1 : band == 1 ? 2 : 1);
     }
     object->add_instance();
     object->ensure_on_bed();
     auto& custom = model.plates_custom_gcodes[0];
     custom.mode = CustomGCode::MultiExtruder;
-    custom.gcodes.push_back({0.7, CustomGCode::PausePrint, 2, "", "Replace unloaded slot 1 only. Leave slot 2 loaded."});
+    if (!active_unload)
+        custom.gcodes.push_back({0.7, CustomGCode::PausePrint, 2, "", "Replace unloaded slot 1 only. Leave slot 2 loaded."});
 
     Print print;
     print.set_status_silent();
@@ -267,26 +302,43 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     GCodeProcessorResult result;
     print.export_gcode(files.gcode.string(), &result, nullptr);
     REQUIRE(result.pause_printing.size() == 1);
-    REQUIRE(result.pause_printing.front().layer_id == 7);
+    REQUIRE(result.pause_printing.front().layer_id == (active_unload ? 4 : 7));
     const auto pause = std::find_if(result.moves.begin(), result.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
     REQUIRE(pause != result.moves.end());
-    REQUIRE(pause->extruder_id == 1); // zero-based virtual filament 2 is still loaded
+    // The processor ignores special T255; this is the last selected virtual ID,
+    // not proof that firmware actually retracted the filament.
+    REQUIRE(pause->extruder_id == (active_unload ? 0 : 1));
     const auto next_extrusion = std::find_if(pause + 1, result.moves.end(), [](const auto& move) { return move.type == EMoveType::Extrude; });
     REQUIRE(next_extrusion != result.moves.end());
-    REQUIRE(next_extrusion->extruder_id == 0);
+    REQUIRE(next_extrusion->extruder_id == (active_unload ? 1 : 0));
     std::ifstream generated(files.gcode.string(), std::ios::binary);
     const std::string gcode((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
     generated.close(); // Windows must release the file before the round-trip export replaces it.
-    const auto pause_tag = gcode.find(";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print));
+    if (active_unload)
+        if (const char* debug = std::getenv("EXTENDED_AMS_PROBE_DEBUG"))
+            std::ofstream(debug, std::ios::binary).write(gcode.data(), gcode.size());
+    // Ignore escaped macro text in the configuration header: match real lines.
+    const auto pause_tag = gcode.find("\n;" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\n");
     REQUIRE(pause_tag != std::string::npos);
-    const auto native_pause = gcode.find("M400 U1", pause_tag);
+    const auto native_pause = gcode.find("\nM400 U1\n", pause_tag);
     REQUIRE(native_pause != std::string::npos);
-    REQUIRE(gcode.find("\nT0\n", native_pause) != std::string::npos);
+    REQUIRE(gcode.find(active_unload ? "\nT1\n" : "\nT0\n", native_pause) != std::string::npos);
+    if (active_unload) {
+        const auto unload = gcode.find("\nT255\n", pause_tag);
+        REQUIRE(unload != std::string::npos);
+        REQUIRE(unload < native_pause);
+        REQUIRE(gcode.find("M621 S255", unload) < native_pause);
+        auto previous = native_pause;
+        for (const auto* selection : {"\nT1\n", "\nT2\n", "\nT3\n", "\nT0\n"}) {
+            previous = gcode.find(selection, previous + 1);
+            REQUIRE(previous != std::string::npos);
+        }
+    }
 
     PlateData plate;
     plate.plate_index = 0;
     plate.objects_and_instances.emplace_back(0, 0);
-    plate.plate_name = "One swap - firmware 01.08.01.00";
+    plate.plate_name = active_unload ? "EXPERIMENTAL active unload - one pause" : "One swap - firmware 01.08.01.00";
     const std::string project_path = files.project.string();
     StoreParams params;
     params.path = project_path.c_str();
@@ -306,10 +358,13 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     REQUIRE(load_bbs_3mf(project_path.c_str(), &loaded_config, &substitutions, &loaded_model, &plates,
         &embedded, &is_bambu, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::Silence));
     REQUIRE(loaded_model.objects.size() == 1);
-    CHECK(loaded_model.objects.front()->volumes.size() == 3);
-    REQUIRE(loaded_model.plates_custom_gcodes[0].gcodes.size() == 1);
-    CHECK(loaded_model.plates_custom_gcodes[0].gcodes.front().type == CustomGCode::PausePrint);
+    CHECK(loaded_model.objects.front()->volumes.size() == (active_unload ? 5 : 3));
+    REQUIRE(loaded_model.plates_custom_gcodes[0].gcodes.size() == (active_unload ? 0 : 1));
+    if (!active_unload)
+        CHECK(loaded_model.plates_custom_gcodes[0].gcodes.front().type == CustomGCode::PausePrint);
     CHECK(loaded_config.opt_string("printer_settings_id") == "Bambu Lab A1 0.2 nozzle");
+    CHECK(loaded_config.opt_string("machine_pause_gcode") == config.opt_string("machine_pause_gcode"));
+    CHECK(loaded_config.opt_string("change_filament_gcode") == config.opt_string("change_filament_gcode"));
     Print reopened;
     reopened.set_status_silent();
     reopened.set_BBL_Printer(true);
@@ -321,10 +376,10 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     GCodeProcessorResult resliced;
     reopened.export_gcode(files.gcode.string(), &resliced, nullptr);
     REQUIRE(resliced.pause_printing.size() == 1);
-    REQUIRE(resliced.pause_printing.front().layer_id == 7);
+    REQUIRE(resliced.pause_printing.front().layer_id == (active_unload ? 4 : 7));
     const auto repeated_pause = std::find_if(resliced.moves.begin(), resliced.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
     REQUIRE(repeated_pause != resliced.moves.end());
-    REQUIRE(repeated_pause->extruder_id == 1);
+    REQUIRE(repeated_pause->extruder_id == (active_unload ? 0 : 1));
     // The same native sliced archive used by the GUI's Bambu Connect handoff.
     plate.printer_model_id = "A1";
     plate.nozzle_diameters = "0.2";
@@ -332,7 +387,7 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     plate.is_sliced_valid = true;
     plate.pause_printing = resliced.pause_printing;
     plate.parse_filament_info(&resliced);
-    REQUIRE(plate.slice_filaments_info.size() == 2);
+    REQUIRE(plate.slice_filaments_info.size() == filament_count);
     for (auto& filament : plate.slice_filaments_info) {
         std::string display_type;
         filament.type = config.get_filament_type(display_type, filament.id);
@@ -353,8 +408,9 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     if (const char* destination = std::getenv("EXTENDED_AMS_PROBE_OUTPUT")) {
         fs::path folder = fs::absolute(destination);
         fs::create_directories(folder);
-        const auto output = folder / "A1 AMS Lite one-swap test.3mf";
-        const auto sliced_output = folder / "A1 AMS Lite one-swap test.gcode.3mf";
+        const std::string stem = active_unload ? "A1 EXPERIMENTAL active-unload test" : "A1 AMS Lite one-swap test";
+        const auto output = folder / (stem + ".3mf");
+        const auto sliced_output = folder / (stem + ".gcode.3mf");
         REQUIRE_FALSE(fs::exists(output));
         REQUIRE_FALSE(fs::exists(sliced_output));
         fs::copy_file(files.project, output);

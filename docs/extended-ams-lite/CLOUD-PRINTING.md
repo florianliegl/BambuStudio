@@ -28,7 +28,9 @@ hardware validation.
 - Standalone suite: 38,296 checks, including the official URL example, Windows
   paths, UTF-8, delimiters, invalid inputs and A1 capacity gating.
 - Real slicer suite: 118 assertions in four cases, including a sliced probe
-  archive with a layer-7 native pause and two PLA filament records.
+  archive with a layer-7 native pause and two PLA filament records. The later
+  experimental active-unload variant brings the suite to 166 assertions; see
+  [A1-ALL-FOUR-TEST.md](A1-ALL-FOUR-TEST.md).
 - Custom GUI/DLL compile and link. A separate `build/extended-ams-connect`
   runtime avoids replacing the older open app's DLL. The launcher prefers it
   when present. Its resources junction points to the repository resources.

@@ -50,8 +50,17 @@ on the user's A1 firmware version. The user reported **01.08.01.00**, an install
 a normal change; a repeatable mid-print command sequence was not supplied.
 The [attended one-slot test](A1-01.08.01.00-TEST.md) uses normal changes 1→2→1
 and a native pause while slot 2 is active, so only inactive slot 1 is replaced.
-Its real slicing and project round trip pass locally; physical results remain
-pending. It does not establish active-spool replacement or an all-four batch.
+Its real slicing and project round trip pass locally. On 2026-10-29 the user
+reported successful completion after enabling LAN-only/Developer Mode. Read-only
+local authentication and live status also passed. This confirms the tested
+inactive-slot replacement and resume; it does not establish active-spool
+replacement, within-layer execution, or an all-four batch. A two-stage visit
+could replace inactive spools, use a normal change to unload the remaining
+active spool, then pause again for that last replacement. The user declined
+that approach and requires one pause for all four spools. All eight test colors
+will be PLA. The [experimental all-four probe](A1-ALL-FOUR-TEST.md) instead
+unloads the active filament before one pause at the actual tool-change boundary.
+Its software checks pass; its physical result remains pending.
 
 **Unavailable in this implementation:** a batch execution backend, automatic swap pauses,
 tool/mapping rewrite, automatic resume, automatic pause markers, certified material

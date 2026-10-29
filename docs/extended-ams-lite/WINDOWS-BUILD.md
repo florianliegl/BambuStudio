@@ -128,7 +128,7 @@ This test exercises the real G-code processor with eight virtual filaments
 mapped to one physical extruder. It is separate from the dependency-free planner
 tests and does not validate printer firmware.
 
-Local result with the A1 0.2 mm probe: **118 assertions in 4 test cases passed**,
+Local result with both A1 0.2 mm probes: **166 assertions in 4 test cases passed**,
 including a real eight-color/four-layer model slice and normal G-code export.
 Every layer retains eight colors; replay verifies four batch visits and sixteen
 spool replacements. The fixture initializes schema-backed options and explicit
@@ -139,6 +139,9 @@ upstream NanoSVG header implementation; no printer or GUI application is started
 by this test.
 
 The fourth case uses real bundled A1 0.2 mm presets for a 12 x 8 x 0.9 mm coupon.
+Its second generated variant uses a 12 x 8 x 1.5 mm coupon to test unloading the
+active filament before one pause and loading all four replacement spools. It is
+experimental; see [A1-ALL-FOUR-TEST.md](A1-ALL-FOUR-TEST.md).
 It validates normal slicing/export and native project save/reload/reslice with
 one pause on layer 7 while slot 2 is selected. See the
 [attended test instructions](A1-01.08.01.00-TEST.md); software checks do not prove

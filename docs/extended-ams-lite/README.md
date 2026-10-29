@@ -126,7 +126,9 @@ G-code export. All eight colors are checked on every exported layer, with four
 grouped visits and sixteen replacements. A fourth case loads the real A1 0.2 mm
 presets, validates and slices an attended inactive-slot replacement probe, saves
 and reloads its native project, and confirms its pause survives reslicing.
-**118 assertions across 4 integration test cases pass locally.**
+**166 assertions across 4 integration test cases pass locally**, including the
+experimental [single-pause all-four probe](A1-ALL-FOUR-TEST.md), whose physical
+active-unload and resume result is still pending.
 
 ```powershell
 # After configuring the full application with dependencies and SLIC3R_BUILD_TESTS=ON:
@@ -153,8 +155,11 @@ normal AMS change before replacing its spool. The A1 profile contains normal
 tool-change macros and an end-of-print `T255` unload path. An end-of-print macro
 does not establish safe mid-print reuse, reload, thermal state or resume behavior.
 The user reported firmware **01.08.01.00** and an installed **0.2 mm nozzle**.
-The [small attended test](A1-01.08.01.00-TEST.md) is prepared and software-validated;
-its physical spool replacement and resume still need observation.
+The user reported successful completion of the
+[small attended test](A1-01.08.01.00-TEST.md) in LAN-only/Developer Mode on
+2026-10-29. This verifies that tested inactive-slot replacement and resume;
+the execution backend and all-four-spool visit still require implementation
+and physical validation.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for source evidence and remaining boundaries.
 
 Base: stable [`v02.08.02.61`](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61),
