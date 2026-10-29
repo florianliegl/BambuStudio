@@ -261,7 +261,8 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     struct ProbeFiles {
         fs::path gcode = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.gcode");
         fs::path project = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.3mf");
-        ~ProbeFiles() { boost::system::error_code ignored; fs::remove(gcode, ignored); fs::remove(project, ignored); }
+        fs::path sliced = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.gcode.3mf");
+        ~ProbeFiles() { boost::system::error_code ignored; fs::remove(gcode, ignored); fs::remove(project, ignored); fs::remove(sliced, ignored); }
     } files;
     GCodeProcessorResult result;
     print.export_gcode(files.gcode.string(), &result, nullptr);
@@ -324,6 +325,27 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
     const auto repeated_pause = std::find_if(resliced.moves.begin(), resliced.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
     REQUIRE(repeated_pause != resliced.moves.end());
     REQUIRE(repeated_pause->extruder_id == 1);
+    // The same native sliced archive used by the GUI's Bambu Connect handoff.
+    plate.printer_model_id = "A1";
+    plate.nozzle_diameters = "0.2";
+    plate.gcode_file = files.gcode.string();
+    plate.is_sliced_valid = true;
+    plate.pause_printing = resliced.pause_printing;
+    plate.parse_filament_info(&resliced);
+    REQUIRE(plate.slice_filaments_info.size() == 2);
+    for (auto& filament : plate.slice_filaments_info) {
+        std::string display_type;
+        filament.type = config.get_filament_type(display_type, filament.id);
+        filament.color = config.option<ConfigOptionStrings>("filament_colour")->get_at(filament.id);
+        filament.filament_id = config.option<ConfigOptionStrings>("filament_ids")->get_at(filament.id);
+    }
+    plate.gcode_prediction = std::to_string(int(resliced.print_statistics.modes[0].time));
+    plate.gcode_weight = std::to_string(reopened.print_statistics().total_weight);
+    const std::string sliced_path = files.sliced.string();
+    params.path = sliced_path.c_str();
+    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel;
+    REQUIRE(store_bbs_3mf(params));
+    REQUIRE(fs::file_size(files.sliced) > 0);
     release_PlateData_list(plates);
     for (auto* preset : embedded) delete preset;
     // An explicit output directory is needed to retain a human-run hardware
@@ -332,7 +354,10 @@ TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one",
         fs::path folder = fs::absolute(destination);
         fs::create_directories(folder);
         const auto output = folder / "A1 AMS Lite one-swap test.3mf";
+        const auto sliced_output = folder / "A1 AMS Lite one-swap test.gcode.3mf";
         REQUIRE_FALSE(fs::exists(output));
+        REQUIRE_FALSE(fs::exists(sliced_output));
         fs::copy_file(files.project, output);
+        fs::copy_file(files.sliced, sliced_output);
     }
 }

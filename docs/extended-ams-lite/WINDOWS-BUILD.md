@@ -128,7 +128,7 @@ This test exercises the real G-code processor with eight virtual filaments
 mapped to one physical extruder. It is separate from the dependency-free planner
 tests and does not validate printer firmware.
 
-Local result with the A1 0.2 mm probe: **115 assertions in 4 test cases passed**,
+Local result with the A1 0.2 mm probe: **118 assertions in 4 test cases passed**,
 including a real eight-color/four-layer model slice and normal G-code export.
 Every layer retains eight colors; replay verifies four batch visits and sixteen
 spool replacements. The fixture initializes schema-backed options and explicit
@@ -189,10 +189,15 @@ The subsequent user test produced Bambu's `unsigned_studio` restriction. A loade
 and compatible plugin does **not** mean the custom executable is authorized to
 print. Removing the warning does not provide that authorization. The installed
 official signed Studio (also 02.08.02.61) can open the standard one-slot probe
-project, and its desktop test shortcut now targets that official executable.
+project, and its desktop test shortcut initially targeted that official executable.
 Direct print submission from the custom build remains unverified/restricted;
 any future complete workflow needs a supported delivery route as well as
 physical swap validation.
+
+The subsequent [Bambu Connect integration](CLOUD-PRINTING.md) supplies that
+supported file-delivery route. The test shortcut now opens the updated custom
+app, whose Preview action exports and opens the slice in Connect. The original
+Print path remains unchanged. This still does not implement physical batch swaps.
 
 This is a repository build, not an installer or a self-contained portable
 package: keep the repository and its resource directory in place. Automatic

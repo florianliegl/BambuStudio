@@ -17,7 +17,8 @@ From this repository in PowerShell:
 .\Run-Extended-AMS-Lite.cmd
 ```
 
-The launcher opens `build/extended-ams-app/src/Release/bambu-studio.exe` with the
+The launcher prefers `build/extended-ams-connect/bambu-studio.exe` when available,
+otherwise `build/extended-ams-app/src/Release/bambu-studio.exe`, with the
 separate settings directory `build/extended-ams-userdata`.
 
 1. Open an editable 3MF project, select the A1, configure and paint the virtual
@@ -44,6 +45,12 @@ the original hexadecimal colors and virtual IDs identify the actual palette.
 Do not send an eight-color project to four slots based on this planner. Applying
 layer order regenerates ordinary virtual-filament G-code; it does not enable the
 missing physical swap execution backend. Ordinary Studio send behavior is unchanged.
+
+For ordinary printable jobs, **Preview → Open in Bambu Connect...** submits the
+custom app's sliced file through Bambu's supported cloud interface. This avoids
+the unsigned executable restriction on the proprietary Print button while keeping
+cloud access. It does not execute eight-color AMS Lite swaps. See
+[CLOUD-PRINTING.md](CLOUD-PRINTING.md) for setup, checks and limitations.
 
 ## Batch behavior
 
@@ -106,7 +113,7 @@ The demo is a synthetic four-layer/eight-color model of selections. It now emits
 batch proposals rather than the original seven-stop Belady example. Example
 exports: [HTML](demo-schedule.html), [text](demo-schedule.txt).
 
-Local standalone Release verification: **38,286 checks**, including 20,480 cache
+Local standalone Release verification: **38,296 checks**, including 20,480 cache
 optimality comparisons, 4,096 fixed-mapping batch optimum comparisons and 1,300
 randomized replays. Tests include exact manual order, sparse layers, locks,
 overrides, stable slot identity, repeatable reslicing, retained layer palettes, corrupt plans, unknown
@@ -119,7 +126,7 @@ G-code export. All eight colors are checked on every exported layer, with four
 grouped visits and sixteen replacements. A fourth case loads the real A1 0.2 mm
 presets, validates and slices an attended inactive-slot replacement probe, saves
 and reloads its native project, and confirms its pause survives reslicing.
-**115 assertions across 4 integration test cases pass locally.**
+**118 assertions across 4 integration test cases pass locally.**
 
 ```powershell
 # After configuring the full application with dependencies and SLIC3R_BUILD_TESTS=ON:

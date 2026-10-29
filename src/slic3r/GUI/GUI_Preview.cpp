@@ -5,6 +5,9 @@
 #include "IMSlider_Utils.hpp"
 #include "GUI_Preview.hpp"
 #include "ExtendedAMSLiteDialog.hpp"
+#include "libslic3r/ExtendedAMSLite/Connect.hpp"
+#include <boost/filesystem.hpp>
+#include <set>
 #include "GUI_App.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
@@ -38,6 +41,7 @@
 
 #ifdef _WIN32
 #include "BitmapComboBox.hpp"
+#include <wx/msw/registry.h>
 #endif
 
 namespace Slic3r {
@@ -313,6 +317,58 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
     auto* ams_row = new wxBoxSizer(wxHORIZONTAL);
     auto* swaps = new wxButton(this, wxID_ANY, _L("Extended AMS Lite: batch swaps..."));
     ams_row->Add(swaps, 0, wxALL, 5);
+    if (wxGetApp().is_editor()) {
+        auto* connect = new wxButton(this, wxID_ANY, _L("Open in Bambu Connect..."));
+        connect->SetToolTip(_L("Use your Bambu account to print this sliced plate. Select the printer and filament slots in Bambu Connect."));
+        ams_row->Add(connect, 0, wxALL, 5);
+        connect->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            auto* plater = wxGetApp().plater();
+            auto* plate = plater->get_partplate_list().get_curr_plate();
+            if (m_only_gcode || !m_gcode_result || !plate ||
+                !plate->is_slice_result_ready_for_export()) {
+                wxMessageBox(_L("Slice the current project plate successfully before opening it in Bambu Connect."),
+                    _L("Bambu Connect"), wxOK | wxICON_INFORMATION, this);
+                return;
+            }
+            std::set<unsigned int> filaments;
+            for (const auto& move : m_gcode_result->moves)
+                if (move.type == EMoveType::Extrude) filaments.insert(move.extruder_id);
+            const auto& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+            if (!ExtendedAMSLite::connect_job_supported(printer.opt_string("printer_model"), filaments.size())) {
+                wxMessageBox(_L("Automatic printing with more than four colors on an A1 AMS Lite is not ready. Bambu Connect submits jobs but does not execute spool swaps. Use a standard job with up to four colors for now."),
+                    _L("Bambu Connect"), wxOK | wxICON_INFORMATION, this);
+                return;
+            }
+#ifdef _WIN32
+            wxRegKey handler(wxRegKey::HKCR, "bambu-connect\\shell\\open\\command");
+            if (!handler.Exists()) {
+                if (wxMessageBox(_L("Install Bambu Connect to print with your Bambu account. Open the official download page?"),
+                    _L("Bambu Connect"), wxYES_NO | wxICON_INFORMATION, this) == wxYES)
+                    wxLaunchDefaultBrowser("https://wiki.bambulab.com/en/software/bambu-connect");
+                return;
+            }
+#endif
+            try {
+                // Keep each exported job alive after returning to Studio. Connect
+                // imports asynchronously; do not hand it a short-lived temp file.
+                const auto folder = boost::filesystem::path(data_dir()) / "connect_jobs";
+                boost::filesystem::create_directories(folder);
+                const auto output = folder / boost::filesystem::unique_path("plate-%%%%-%%%%-%%%%.gcode.3mf");
+                const auto strategy = SaveStrategy::Silence | SaveStrategy::SplitModel |
+                    SaveStrategy::WithGcode | SaveStrategy::SkipModel;
+                if (plater->export_3mf(output, strategy, plate->get_index()) < 0)
+                    throw std::runtime_error("Could not export the sliced plate for Bambu Connect.");
+                const std::string name = plater->get_export_gcode_filename("", true, false).utf8_string();
+                const auto uri = ExtendedAMSLite::connect_import_uri(boost::filesystem::absolute(output).string(), name);
+                if (!wxLaunchDefaultBrowser(wxString::FromUTF8(uri))) {
+                    wxMessageBox(_L("Could not open Bambu Connect. You can import the saved sliced file manually:") +
+                        "\n" + wxString::FromUTF8(output.string()), _L("Bambu Connect"), wxOK | wxICON_ERROR, this);
+                }
+            } catch (const std::exception& error) {
+                wxMessageBox(wxString::FromUTF8(error.what()), _L("Bambu Connect"), wxOK | wxICON_ERROR, this);
+            }
+        });
+    }
     main_sizer->Add(ams_row, 0, wxEXPAND);
     swaps->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_gcode_result || m_gcode_result->moves.empty() ||

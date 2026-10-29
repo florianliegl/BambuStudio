@@ -1,4 +1,5 @@
 #include "Planner.hpp"
+#include "Connect.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -348,6 +349,18 @@ void exhaustive_and_random()
 int main()
 {
     try {
+        check(connect_import_uri("/tmp/cube.gcode.3mf", "Cube") ==
+            "bambu-connect://import-file?path=%2Ftmp%2Fcube.gcode.3mf&name=Cube&version=1.0.0", "Official Connect example");
+        check(connect_uri_component("C:\\Prints\\a b&c#1%.gcode.3mf") ==
+            "C%3A%5CPrints%5Ca%20b%26c%231%25.gcode.3mf", "Windows path and query delimiters stay in path parameter");
+        check(connect_uri_component(u8"Grün") == "Gr%C3%BCn", "UTF-8 file names");
+        rejects([] { connect_import_uri("", "Cube"); });
+        rejects([] { connect_import_uri("/tmp/a.3mf", std::string("a\0b", 3)); });
+        check(connect_job_supported("A1", 2), "Ordinary A1 probe can be handed off");
+        check(!connect_job_supported("A1", 8), "Connect does not implement eight-color A1 execution");
+        check(!connect_job_supported("A1mini", 5), "A1 mini has the same AMS Lite limit");
+        check(!connect_job_supported("A1", 0), "Empty jobs cannot be handed off");
+        check(connect_job_supported("X1C", 8), "Other models keep their normal multi-AMS support");
         scenarios();
         invalid_inputs_and_corruption();
         trace_contract();
