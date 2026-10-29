@@ -2,7 +2,12 @@
 setlocal
 set "amsRoot=%~dp0"
 set "amsApp=%amsRoot%build\extended-ams-app\src\Release\bambu-studio.exe"
+set "amsData=%amsRoot%build\extended-ams-userdata"
 if exist "%amsRoot%build\extended-ams-connect\bambu-studio.exe" set "amsApp=%amsRoot%build\extended-ams-connect\bambu-studio.exe"
+if exist "%amsRoot%build\extended-ams-checked\bambu-studio.exe" (
+    set "amsApp=%amsRoot%build\extended-ams-checked\bambu-studio.exe"
+    if exist "%amsRoot%build\extended-ams-checked-userdata\BambuStudio.conf" set "amsData=%amsRoot%build\extended-ams-checked-userdata"
+)
 if not exist "%amsApp%" (
     echo The custom Bambu Studio application has not been built yet.
     echo See docs\extended-ams-lite\README.md for build instructions.
@@ -11,5 +16,5 @@ if not exist "%amsApp%" (
 )
 rem Keep this test application's settings separate from the installed Studio.
 for %%I in ("%amsApp%") do set "amsAppDir=%%~dpI"
-start "Extended AMS Lite" /D "%amsAppDir%" "%amsApp%" --datadir "%amsRoot%build\extended-ams-userdata" %*
+start "Extended AMS Lite" /D "%amsAppDir%" "%amsApp%" --datadir "%amsData%" %*
 exit /b 0

@@ -1,5 +1,6 @@
 #include "Planner.hpp"
 #include "Connect.hpp"
+#include "Probe.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -349,6 +351,25 @@ void exhaustive_and_random()
 int main()
 {
     try {
+        const std::string probe = "; AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN\nM620 S255\nT255\nM621 S255\nM400 U1\nT1\nG1 E1\n";
+        auto probe_error = [](const std::string& text) { std::istringstream input(text); return active_unload_probe_error(input); };
+        check(probe_error(probe).empty(), "Accept the expected unload-pause-load sequence");
+        check(!probe_error("T1\nG1 E1\n").empty(), "Reject the actual failure: system macro has no probe pause");
+        check(!probe_error("; change_filament_gcode = ; AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN\\nT255\\nM621 S255\\nM400 U1\\nT1\n").empty(), "Escaped config text is not execution");
+        auto bad_probe = probe;
+        bad_probe.erase(bad_probe.find("T255\n"), 5);
+        check(!probe_error(bad_probe).empty(), "Reject pause without active unload");
+        bad_probe = probe;
+        bad_probe.insert(bad_probe.find("T1\n"), "G1 E1\n");
+        check(!probe_error(bad_probe).empty(), "Reject extrusion while unloaded");
+        check(!probe_error(probe + "M400 U1\n").empty(), "Reject an extra pause");
+        check(!probe_error(probe.substr(0, probe.find("T1\n"))).empty(), "Reject a missing replacement selection");
+        bad_probe = probe;
+        bad_probe.erase(bad_probe.find("M620 S255\n"), 10);
+        check(!probe_error(bad_probe).empty(), "Reject an unload outside the native AMS scope");
+        bad_probe = probe;
+        bad_probe.replace(bad_probe.find("T1\n"), 2, "T2");
+        check(!probe_error(bad_probe).empty(), "Reject the wrong first replacement spool");
         check(connect_import_uri("/tmp/cube.gcode.3mf", "Cube") ==
             "bambu-connect://import-file?path=%2Ftmp%2Fcube.gcode.3mf&name=Cube&version=1.0.0", "Official Connect example");
         check(connect_uri_component("C:\\Prints\\a b&c#1%.gcode.3mf") ==

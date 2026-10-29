@@ -70,6 +70,7 @@
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "Gizmos/GLGizmoAlignment.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/ExtendedAMSLite/Probe.hpp"
 #include "libslic3r/ModelArrange.hpp"
 #include "libslic3r/SLA/Hollowing.hpp"
 #include "libslic3r/SLA/SupportPoint.hpp"
@@ -23142,6 +23143,27 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     // wx tears down the app and null-derefs wxTheApp during shutdown -> hard crash. Contain it here:
     // fail the save, tell the user which setting is bad, and let them fix it and try again.
     try {
+    if ((strategy & SaveStrategy::WithGcode) && (strategy & SaveStrategy::SkipModel) && !(strategy & SaveStrategy::Backup)) {
+        const int first = export_plate_idx >= 0 ? export_plate_idx : 0;
+        const int last = export_plate_idx >= 0 ? export_plate_idx + 1 : p->partplate_list.get_plate_count();
+        for (int i = first; i < last && i < p->partplate_list.get_plate_count(); ++i) {
+            auto* plate = p->partplate_list.get_plate(i);
+            const auto objects = plate->get_objects_on_this_plate();
+            if (std::none_of(objects.begin(), objects.end(), [](const ModelObject* object) {
+                return object->name == ExtendedAMSLite::active_unload_probe_name;
+            })) continue;
+            const auto* result = plate->get_slice_result();
+            std::ifstream input(result ? result->filename : std::string{}, std::ios::binary);
+            const auto error = !plate->is_slice_result_ready_for_export() || !input ?
+                std::string("The test has no current printable slice.") : ExtendedAMSLite::active_unload_probe_error(input);
+            if (!error.empty()) {
+                MessageDialog(this, wxString::FromUTF8(error) + "\n\n" +
+                    _L("Reload the corrected editable AMS Lite test project and slice it again before printing."),
+                    _L("AMS Lite test not ready"), wxOK | wxICON_WARNING).ShowModal();
+                return -1;
+            }
+        }
+    }
     // Persist assembly-view edits: the assembly steps / tree are authored on the independent assembly
     // model, so mirror them onto the prepare model before serialization. This covers saving while still
     // inside the assembly view (the leave_assemble_stack sync only fires when switching panels).

@@ -99,6 +99,9 @@ after completing a verified load procedure.
 - `src/slic3r/CMakeLists.txt`: register the new GUI dialog.
 - `src/slic3r/GUI/GUI_Preview.cpp`: launch batch planning, refusing unsliced or
   stale current plates; save native sequences with undo and request reslicing.
+- `src/slic3r/GUI/Plater.cpp`: before exporting a model-free sliced job for the
+  named active-unload probe, reject missing unload/pause/load sequences or
+  extrusion while unloaded. Ordinary project saves and backups remain available.
 - `tests/CMakeLists.txt`: register the dependency-free planner tests.
 - `tests/extended_ams_lite/CMakeLists.txt`: register the standalone tests and a
   separate real-processor integration executable. The upstream aggregate tests

@@ -1,5 +1,10 @@
 # Experimental A1 all-four-spool replacement test
 
+Use **A1 EXPERIMENTAL active-unload v2.3mf** through the updated desktop shortcut.
+The first editable version was replaced after its custom printer macro was lost
+in GUI preset reconciliation; the user's sent job contained zero pause commands.
+That print did not exercise active unloading or establish firmware pause behavior.
+
 The user requires **one pause per visit** and confirmed the first eight-color
 job will use **PLA in all eight colors**. Two-stage visits were declined. The
 previous inactive-slot test passed on A1 firmware 01.08.01.00 with a 0.2 mm nozzle
@@ -38,12 +43,15 @@ eight-identity execution backend.
 ## Run the attended test
 
 1. Open the desktop **AMS Lite all-four test** shortcut. It opens the editable
-   `.3mf` in custom Studio. Adjust the prime tower or plate setting as needed,
+   **v2.3mf** in the checked custom Studio build. Close older test windows to avoid
+   using the earlier project. Adjust the prime tower or plate setting as needed,
    then slice. Retain its modified printer G-code, A1 0.2 mm nozzle, 0.1 mm layers
    and geometry. Confirm one pause during layer 4 after slicing.
    The `.gcode.3mf` companion is a fixed slice without model geometry: changing a
    setting invalidates its toolpaths and leaves an empty plate. Use the editable
    `.3mf` whenever changing settings.
+   Studio may show its normal **Modified G-codes** notice: this test intentionally
+   modifies the filament-change macro. Retain the included printer settings.
 2. Keep the printer in LAN-only/Developer Mode. Confirm all four loaded spools
    and the four replacement spools really are PLA, and their printer material
    settings say PLA. Select the actual build plate in the send options.
@@ -67,7 +75,7 @@ colors printed after Resume. Include any exact printer error code.
 
 ## Software verification
 
-The real slicer suite passes **179 assertions in four cases**, including both
+The real slicer suite passes **187 assertions in four cases**, including both
 probe variants. Checks cover the actual extrusion immediately after the pause,
 unload-before-pause ordering, native selections 2→3→4→1 after Resume, exactly one
 pause, project save/reload/reslice and a sliced archive with all four PLA records.
@@ -78,6 +86,20 @@ An editable-project regression changes the prime-tower width after reload,
 reslices, and verifies all five meshes, the single layer-4 pause and the first
 post-pause extrusion from slot 2 survive. The desktop shortcut opens that
 editable project rather than the geometry-free fixed slice.
+
+The regression now also uses the GUI's `PresetBundle::load_config_model` path,
+checks the reconstructed full config, edits the process preset's tower width,
+and reslices. The old fixture failed that test: it changed raw full config but
+omitted `change_filament_gcode` from the printer's `different_settings_to_system`
+metadata. GUI import consequently restored the system macro. V2 generates this
+metadata from the edited printer preset using the normal full-config exporter.
+
+The checked build validates this named probe's real G-code before exporting a
+model-free sliced job for LAN/Connect submission. It requires the scoped unload,
+one pause, subsequent slot-2 selection and no extrusion while unloaded. Missing
+sequences are rejected before submission; saving an editable project or backup
+remains possible. The standalone suite passes 38,305 checks, including malformed,
+missing and duplicate pause/unload cases and escaped-header false positives.
 
 The upstream cooling editor logs special `T255` as an out-of-range virtual tool,
 retains the command and leaves its tracked virtual identity unchanged. The

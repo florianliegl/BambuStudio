@@ -17,9 +17,11 @@ From this repository in PowerShell:
 .\Run-Extended-AMS-Lite.cmd
 ```
 
-The launcher prefers `build/extended-ams-connect/bambu-studio.exe` when available,
+The launcher prefers `build/extended-ams-checked/bambu-studio.exe`, then
+`build/extended-ams-connect/bambu-studio.exe` when available,
 otherwise `build/extended-ams-app/src/Release/bambu-studio.exe`, with the
-separate settings directory `build/extended-ams-userdata`.
+separate settings directory `build/extended-ams-userdata` (or the prepared
+`build/extended-ams-checked-userdata` for the checked runtime).
 
 1. Open an editable 3MF project, select the A1, configure and paint the virtual
    colors normally, and slice the plate.
@@ -113,7 +115,7 @@ The demo is a synthetic four-layer/eight-color model of selections. It now emits
 batch proposals rather than the original seven-stop Belady example. Example
 exports: [HTML](demo-schedule.html), [text](demo-schedule.txt).
 
-Local standalone Release verification: **38,296 checks**, including 20,480 cache
+Local standalone Release verification: **38,305 checks**, including 20,480 cache
 optimality comparisons, 4,096 fixed-mapping batch optimum comparisons and 1,300
 randomized replays. Tests include exact manual order, sparse layers, locks,
 overrides, stable slot identity, repeatable reslicing, retained layer palettes, corrupt plans, unknown
@@ -126,7 +128,7 @@ G-code export. All eight colors are checked on every exported layer, with four
 grouped visits and sixteen replacements. A fourth case loads the real A1 0.2 mm
 presets, validates and slices an attended inactive-slot replacement probe, saves
 and reloads its native project, and confirms its pause survives reslicing.
-**179 assertions across 4 integration test cases pass locally**, including the
+**187 assertions across 4 integration test cases pass locally**, including the
 experimental [single-pause all-four probe](A1-ALL-FOUR-TEST.md), whose physical
 active-unload and resume result is still pending.
 

@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 #include "libslic3r/ExtendedAMSLite/Planner.hpp"
+#include "libslic3r/ExtendedAMSLite/Probe.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/GCode/ToolOrdering.hpp"
 #include "libslic3r/ParameterUtils.hpp"
@@ -260,11 +261,22 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
             GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) +
             "\n; AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN\nM400\nG90\nG1 Z{max_layer_z + 3.0} F1200\n" +
             unload + "\nM400\n; AMS_LITE_ACTIVE_UNLOAD_PROBE_END\nM400 U1\n{endif}\n" + ordinary_change));
+        // Full config alone is insufficient: GUI import updates keys not listed
+        // as overrides from the system profile. Generate the normal export
+        // metadata from an edited printer preset so the unload macro survives.
+        presets.printers.get_edited_preset().config.set_key_value("change_filament_gcode",
+            config.option("change_filament_gcode")->clone());
+        presets.printers.update_dirty();
+        const auto native_export = presets.full_config();
+        const auto* differences = native_export.option<ConfigOptionStrings>("different_settings_to_system");
+        REQUIRE(differences != nullptr);
+        REQUIRE(differences->values.back().find("change_filament_gcode") != std::string::npos);
+        config.set_key_value("different_settings_to_system", differences->clone());
     }
 
     Model model;
     auto* object = model.add_object();
-    object->name = active_unload ? "EXPERIMENTAL - unload slot 1, replace all four, then print slots 2, 3, 4, 1" :
+    object->name = active_unload ? AMS::active_unload_probe_name :
         "AMS Lite one-swap test - slot 1, slot 2, replacement in slot 1";
     for (int band = 0; band < (active_unload ? 5 : 3); ++band) {
         TriangleMesh mesh = make_cube(12, 8, 0.3);
@@ -325,6 +337,8 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
     REQUIRE(native_pause != std::string::npos);
     REQUIRE(gcode.find(active_unload ? "\nT1\n" : "\nT0\n", native_pause) != std::string::npos);
     if (active_unload) {
+        std::istringstream guarded(gcode);
+        REQUIRE(AMS::active_unload_probe_error(guarded).empty());
         const auto unload = gcode.find("\nT255\n", pause_tag);
         REQUIRE(unload != std::string::npos);
         REQUIRE(unload < native_pause);
@@ -339,7 +353,7 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
     PlateData plate;
     plate.plate_index = 0;
     plate.objects_and_instances.emplace_back(0, 0);
-    plate.plate_name = active_unload ? "EXPERIMENTAL active unload - one pause" : "One swap - firmware 01.08.01.00";
+    plate.plate_name = active_unload ? "EXPERIMENTAL v2 - unload then one pause" : "One swap - firmware 01.08.01.00";
     const std::string project_path = files.project.string();
     StoreParams params;
     params.path = project_path.c_str();
@@ -366,13 +380,31 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
     CHECK(loaded_config.opt_string("printer_settings_id") == "Bambu Lab A1 0.2 nozzle");
     CHECK(loaded_config.opt_string("machine_pause_gcode") == config.opt_string("machine_pause_gcode"));
     CHECK(loaded_config.opt_string("change_filament_gcode") == config.opt_string("change_filament_gcode"));
+    // Match the GUI preset-reconciliation step, not just raw 3MF decoding.
+    // Native different_settings_to_system metadata decides which printer
+    // overrides survive replacement by the bundled system preset.
+    PresetBundle restored_presets;
+    restored_presets.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    if (!embedded.empty())
+        restored_presets.load_project_embedded_presets(embedded, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    auto gui_config = loaded_config;
+    Preset::normalize(gui_config);
+    restored_presets.load_config_model(project_path, std::move(gui_config), version);
+    auto reconciled_config = restored_presets.full_config();
+    REQUIRE(reconciled_config.opt_string("change_filament_gcode") == config.opt_string("change_filament_gcode"));
+    if (active_unload) {
+        const auto* differences = reconciled_config.option<ConfigOptionStrings>("different_settings_to_system");
+        REQUIRE(differences != nullptr);
+        REQUIRE(differences->values.back().find("change_filament_gcode") != std::string::npos);
+    }
     Print reopened;
     reopened.set_status_silent();
     reopened.set_BBL_Printer(true);
     reopened.set_plate_index(0);
     reopened.set_plate_origin(Vec3d::Zero());
     reopened.set_extruder_filament_info(presets.get_extruder_filament_info());
-    reopened.apply(loaded_model, loaded_config);
+    reopened.apply(loaded_model, reconciled_config);
     reopened.process();
     GCodeProcessorResult resliced;
     reopened.export_gcode(files.gcode.string(), &resliced, nullptr);
@@ -405,9 +437,12 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
     if (active_unload) {
         // Regression: the editable project must survive a prime-tower setting
         // change and reslice. A SkipModel sliced archive cannot provide this.
-        auto edited_config = loaded_config;
-        const double previous_width = edited_config.option<ConfigOptionFloat>("prime_tower_width")->value;
-        edited_config.set_key_value("prime_tower_width", new ConfigOptionFloat(previous_width + 5.));
+        auto& edited_process = restored_presets.prints.get_edited_preset().config;
+        const double previous_width = edited_process.option<ConfigOptionFloat>("prime_tower_width")->value;
+        edited_process.set_key_value("prime_tower_width", new ConfigOptionFloat(previous_width + 5.));
+        restored_presets.prints.update_dirty();
+        auto edited_config = restored_presets.full_config();
+        REQUIRE(edited_config.opt_string("change_filament_gcode") == config.opt_string("change_filament_gcode"));
         reopened.apply(loaded_model, edited_config);
         REQUIRE(loaded_model.objects.size() == 1);
         REQUIRE(loaded_model.objects.front()->volumes.size() == 5);
@@ -436,7 +471,7 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
     if (const char* destination = std::getenv("EXTENDED_AMS_PROBE_OUTPUT")) {
         fs::path folder = fs::absolute(destination);
         fs::create_directories(folder);
-        const std::string stem = active_unload ? "A1 EXPERIMENTAL active-unload test" : "A1 AMS Lite one-swap test";
+        const std::string stem = active_unload ? "A1 EXPERIMENTAL active-unload v2" : "A1 AMS Lite one-swap test";
         const auto output = folder / (stem + ".3mf");
         const auto sliced_output = folder / (stem + ".gcode.3mf");
         REQUIRE_FALSE(fs::exists(output));
