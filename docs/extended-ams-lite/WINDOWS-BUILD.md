@@ -185,6 +185,15 @@ connectivity or print submission. The separate configuration requires its own
 normal Bambu account login and printer selection; no login tokens were copied
 from the installed Studio.
 
+The subsequent user test produced Bambu's `unsigned_studio` restriction. A loaded
+and compatible plugin does **not** mean the custom executable is authorized to
+print. Removing the warning does not provide that authorization. The installed
+official signed Studio (also 02.08.02.61) can open the standard one-slot probe
+project, and its desktop test shortcut now targets that official executable.
+Direct print submission from the custom build remains unverified/restricted;
+any future complete workflow needs a supported delivery route as well as
+physical swap validation.
+
 This is a repository build, not an installer or a self-contained portable
 package: keep the repository and its resource directory in place. Automatic
 spool-change printing remains unavailable; see `ARCHITECTURE.md` for the
