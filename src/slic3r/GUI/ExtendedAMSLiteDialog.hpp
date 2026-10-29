@@ -25,6 +25,7 @@ private:
     struct Card { wxPanel* color; wxStaticText* text; };
     std::vector<ExtendedAMSLite::Filament> m_filaments;
     std::vector<ExtendedAMSLite::Request> m_requests;
+    std::vector<double> m_magnet_pauses;
     ExtendedAMSLite::BatchPlan m_plan;
     std::array<Card, 4> m_loading, m_changes;
     std::array<wxChoice*, 4> m_initial;

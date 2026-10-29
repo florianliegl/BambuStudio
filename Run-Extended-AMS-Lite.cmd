@@ -12,6 +12,10 @@ if exist "%amsRoot%build\extended-ams-execution\BambuStudio.dll" (
     set "amsApp=%amsRoot%build\extended-ams-execution\bambu-studio.exe"
     set "amsData=%amsRoot%build\extended-ams-execution-userdata"
 )
+if exist "%amsRoot%build\extended-ams-magnets\BambuStudio.dll" (
+    set "amsApp=%amsRoot%build\extended-ams-magnets\bambu-studio.exe"
+    set "amsData=%amsRoot%build\extended-ams-magnets-userdata"
+)
 if not exist "%amsApp%" (
     echo The custom Bambu Studio application has not been built yet.
     echo See docs\extended-ams-lite\README.md for build instructions.

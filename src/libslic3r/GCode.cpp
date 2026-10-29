@@ -2,6 +2,7 @@
 #include "I18N.hpp"
 #include "GCode.hpp"
 #include "ExtendedAMSLite/Execution.hpp"
+#include "MagnetPockets.hpp"
 #include "Exception.hpp"
 #include "ExtrusionEntity.hpp"
 #include "EdgeGrid.hpp"
@@ -2301,6 +2302,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     PROFILE_FUNC();
 
     m_print = &print;
+    try { MagnetPockets::validate_print(print); }
+    catch (const std::exception& error) { throw Slic3r::RuntimeError(error.what()); }
     m_extended_ams_lite.reset();
     const auto& ams_full = print.full_print_config();
     const auto* ams_notes = ams_full.option<ConfigOptionString>("process_notes");
@@ -2319,8 +2322,13 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         }
         if (print.config().change_filament_gcode.value.find("AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN") != std::string::npos)
             throw Slic3r::RuntimeError("Select the standard A1 printer profile before preparing Extended AMS Lite printing.");
-        if (!print.model().get_curr_plate_custom_gcodes().gcodes.empty())
+        const auto custom = print.model().get_curr_plate_custom_gcodes();
+        if (std::any_of(custom.gcodes.begin(), custom.gcodes.end(), [](const CustomGCode::Item& item) { return !MagnetPockets::is_insertion_pause(item); }))
             throw Slic3r::RuntimeError("Remove manual pauses and custom layer G-code before enabling Extended AMS Lite automatic swap pauses.");
+        const auto magnets = MagnetPockets::insertion_heights(custom);
+        if (magnets.size() != spec->magnet_pauses.size() || !std::equal(magnets.begin(), magnets.end(), spec->magnet_pauses.begin(),
+            [](double a, double b) { return std::abs(a - b) < 0.001; }))
+            throw Slic3r::RuntimeError("Magnet pauses changed. Prepare the AMS Lite print again.");
         m_extended_ams_lite = std::make_shared<ExtendedAMSLite::ExecutionSession>(*spec);
         file.writeln("; EAMS_JOB " + spec->job_id);
     }
@@ -4204,12 +4212,15 @@ namespace ProcessLayer
 #endif
                 if (gcode_type == CustomGCode::PausePrint) // Pause print
                 {
+                    const bool magnet = MagnetPockets::is_insertion_pause(*custom_gcode);
+                    if (magnet) gcode += "; MAGNET_INSERT_BEGIN " + std::to_string(custom_gcode->print_z) + "\n";
                     // add tag for processor
                     gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\n";
                     //! FIXME_in_fw show message during print pause
                     //if (!pause_print_msg.empty())
                     //    gcode += "M117 " + pause_print_msg + "\n";
                     gcode += gcodegen.placeholder_parser_process("machine_pause_gcode", config.machine_pause_gcode, current_extruder_id) + "\n";
+                    if (magnet) gcode += "; MAGNET_INSERT_END\n";
                 }
                 else {
                     // add tag for processor

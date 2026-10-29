@@ -12,6 +12,7 @@ struct ExecutionSpec {
     std::vector<Slot> slots;
     std::vector<Filament> filaments;
     BatchPlan plan;
+    std::vector<double> magnet_pauses; // native insertion pauses, separate from spool visits
 };
 
 BatchPlan plan_fixed_batches(const std::vector<Request>& requests, const std::vector<Slot>& slots,

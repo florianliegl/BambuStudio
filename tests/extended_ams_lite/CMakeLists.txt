@@ -22,6 +22,7 @@ if(TARGET libslic3r AND TARGET test_common AND TARGET libcurl
     add_executable(extended_ams_lite_integration
         integration_main.cpp
         ../libslic3r/test_extended_ams_lite.cpp
+        ../libslic3r/test_magnet_pockets.cpp
         ../../src/slic3r/Utils/Http.cpp
         ../../src/slic3r/Utils/BBLUtil.cpp)
     # libslic3r's LogSink references the existing HTTP implementation, while

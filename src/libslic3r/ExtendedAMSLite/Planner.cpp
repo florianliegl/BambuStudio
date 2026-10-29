@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <limits>
 #include <iomanip>
 #include <map>
@@ -607,6 +608,10 @@ void verify_execution(const ExecutionSpec& spec)
         throw std::invalid_argument("Extended AMS Lite needs a current, verified four-slot plan.");
     for (const auto& f : spec.filaments)
         if (f.material != "PLA") throw std::invalid_argument("Extended AMS Lite printing currently supports PLA colors only.");
+    if (spec.magnet_pauses.size() > 1000) throw std::invalid_argument("Too many magnet insertion pauses.");
+    for (std::size_t i = 0; i < spec.magnet_pauses.size(); ++i)
+        if (!std::isfinite(spec.magnet_pauses[i]) || spec.magnet_pauses[i] <= 0. || (i && spec.magnet_pauses[i] <= spec.magnet_pauses[i-1]))
+            throw std::invalid_argument("Invalid magnet insertion pause heights.");
     verify_batches(spec.slots, spec.plan);
     if (!spec.plan.schedule.stops.empty() && spec.plan.schedule.stops.front().before_request == 0)
         throw std::invalid_argument("Load the first required color before starting. Use Auto for the initial slots and prepare again.");
@@ -625,6 +630,11 @@ std::string serialize_execution(const ExecutionSpec& spec)
     for (const auto& stop : spec.plan.schedule.stops) {
         out << stop.before_request << ' ' << stop.replacements.size() << '\n';
         for (const auto& r : stop.replacements) out << r.slot << ' ' << r.remove << ' ' << r.insert << '\n';
+    }
+    if (!spec.magnet_pauses.empty()) {
+        out << "MAGNETS " << spec.magnet_pauses.size() << std::setprecision(12);
+        for (double z : spec.magnet_pauses) out << ' ' << z;
+        out << '\n';
     }
     out << "END\n";
     return out.str();
@@ -665,7 +675,15 @@ ExecutionSpec deserialize_execution(const std::string& text)
     }
     for (std::size_t i = 1; i < requests; ++i)
         if (spec.plan.requests[i - 1].filament != spec.plan.requests[i].filament) ++spec.plan.color_changes;
-    if (!(in >> tag) || tag != "END" || (in >> tag)) invalid();
+    if (!(in >> tag)) invalid();
+    if (tag == "MAGNETS") {
+        std::size_t count = 0;
+        if (!(in >> count) || count > 1000) invalid();
+        spec.magnet_pauses.resize(count);
+        for (auto& z : spec.magnet_pauses) if (!(in >> z)) invalid();
+        if (!(in >> tag)) invalid();
+    }
+    if (tag != "END" || (in >> tag)) invalid();
     verify_execution(spec);
     return spec;
 }
@@ -714,6 +732,8 @@ std::string format_execution_guide(const ExecutionSpec& spec, bool html)
     out << "\nAt a swap pause, the active filament is already unloaded. Replace all spools listed for that visit. "
            "Feed each replacement to the AMS inlet. Keep other spools loaded. Press Resume only after every replacement is complete. "
            "Do not change the job's fixed slot mapping. An error or manual pause does not mean a swap visit.\n";
+    for (double z : spec.magnet_pauses)
+        out << "\nMagnet insertion at Z " << z << " mm: insert magnets; this is separate from the spool-swap visits. Keep the loaded spools.\n";
     for (std::size_t v = 0; v < spec.plan.schedule.stops.size(); ++v) {
         const auto& stop = spec.plan.schedule.stops[v];
         const auto& request = spec.plan.requests[stop.before_request];
@@ -785,12 +805,24 @@ std::string execution_gcode_error(std::istream& input, const ExecutionSpec& spec
     for (std::size_t i = 1; i < spec.plan.requests.size(); ++i)
         if (spec.plan.requests[i].filament != spec.plan.requests[i - 1].filament) events.push_back(i);
     auto loaded = spec.plan.schedule.initial_slots;
-    std::size_t selects = 0, visits = 0, pauses = 0;
+    std::size_t selects = 0, visits = 0, pauses = 0, magnets = 0;
     int pending = -1, current = -1;
     bool header = false, end = false, visit_open = false, scope = false, unloaded = false, closed = false;
+    bool magnet_open = false, magnet_paused = false;
     std::string line;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        const std::string magnet_begin = "; MAGNET_INSERT_BEGIN ";
+        if (line.rfind(magnet_begin, 0) == 0) {
+            double z = 0.; std::istringstream row(line.substr(magnet_begin.size()));
+            if (!(row >> z) || magnets >= spec.magnet_pauses.size() || std::abs(z - spec.magnet_pauses[magnets]) > 0.001 ||
+                magnet_open || visit_open || pending >= 0 || unloaded || !header)
+                return "An unplanned magnet insertion pause was found. Prepare the print again.";
+            magnet_open = true; magnet_paused = false;
+        } else if (line == "; MAGNET_INSERT_END") {
+            if (!magnet_open || !magnet_paused) return "The magnet insertion pause is incomplete.";
+            magnet_open = false; ++magnets;
+        }
         if (line.rfind("; EAMS_JOB ", 0) == 0) {
             if (header || line.substr(11) != spec.job_id) return "The slice belongs to a different AMS Lite job.";
             header = true;
@@ -823,6 +855,10 @@ std::string execution_gcode_error(std::istream& input, const ExecutionSpec& spec
         }
         if (visit_open && command == "M621" && parameter == "S255" && unloaded) closed = true;
         if (command == "M400" && parameter == "U1") {
+            if (magnet_open) {
+                if (magnet_paused || unloaded || visit_open) return "Invalid magnet insertion pause.";
+                magnet_paused = true; continue;
+            }
             if (!visit_open || !unloaded || !closed) return "A swap pause is missing its completed active unload.";
             for (const auto& r : spec.plan.schedule.stops[pauses].replacements) {
                 if (loaded[r.slot] != r.remove) return "A swap instruction has a stale loading state.";
@@ -849,7 +885,7 @@ std::string execution_gcode_error(std::istream& input, const ExecutionSpec& spec
             }
         }
     }
-    if (input.bad() || !header || !end || visit_open || pending >= 0 || selects != events.size() ||
+    if (input.bad() || !header || !end || visit_open || magnet_open || magnets != spec.magnet_pauses.size() || pending >= 0 || selects != events.size() ||
         visits != spec.plan.schedule.stops.size() || pauses != visits)
         return "The AMS Lite slice is incomplete or its pause count changed. Prepare again.";
     return {};

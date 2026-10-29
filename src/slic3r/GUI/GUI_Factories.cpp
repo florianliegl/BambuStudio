@@ -3,6 +3,7 @@
 #include "libslic3r/Model.hpp"
 
 #include "GUI_Factories.hpp"
+#include "MagnetPocketDialog.hpp"
 #include "GUI_ObjectList.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
@@ -685,6 +686,11 @@ void MenuFactory::append_menu_items_add_volume(wxMenu* menu)
     }
 
     append_menu_item_layers_editing(menu);
+    const auto magnets_id = menu->FindItem(_L("Magnet pockets..."));
+    if (magnets_id != wxNOT_FOUND) menu->Destroy(magnets_id);
+    append_menu_item(menu, wxID_ANY, _L("Magnet pockets..."), _L("Create fitted magnet pockets and an insertion pause"),
+        [this](wxCommandEvent&) { show_magnet_pockets(m_parent); }, "", menu,
+        []() { return obj_list()->is_instance_or_object_selected(); }, m_parent);
 }
 
 wxMenuItem* MenuFactory::append_menu_item_layers_editing(wxMenu* menu)

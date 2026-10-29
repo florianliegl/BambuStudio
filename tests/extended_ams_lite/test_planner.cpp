@@ -91,6 +91,12 @@ void execution_cases()
     rejects([&] { wrong.finish(); });
     auto fixed = plan_fixed_batches(requests, spec.slots, spec.plan.filament_slots);
     check(fixed.schedule.request_slots == spec.plan.schedule.request_slots, "Final native order retains the chosen physical assignments");
+    spec.magnet_pauses = {2.9};
+    check(deserialize_execution(serialize_execution(spec)).magnet_pauses == spec.magnet_pauses, "Magnet insertion pauses persist independently of spool visits");
+    auto with_magnet = gcode;
+    with_magnet.insert(with_magnet.find("G1 E2\n") + 6, "; MAGNET_INSERT_BEGIN 2.900000\n; PAUSE_PRINTING\nM400 U1\n; MAGNET_INSERT_END\n");
+    check(error(with_magnet).empty(), "A planned magnet insertion keeps the current spool loaded");
+    check(!error(gcode).empty(), "Removing a planned magnet insertion blocks submission");
 }
 
 // Exhaustive reference solver explores every legal victim. It shares no

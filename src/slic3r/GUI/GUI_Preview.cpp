@@ -9,6 +9,7 @@
 #include "DeviceManager.hpp"
 #include "DeviceCore/DevManager.h"
 #include "libslic3r/ExtendedAMSLite/Execution.hpp"
+#include "libslic3r/MagnetPockets.hpp"
 #include "libslic3r/ExtendedAMSLite/Connect.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -554,6 +555,7 @@ void Preview::prepare_ams_slice()
                 if (m_gcode_result->filament_change_sequence.empty()) throw std::runtime_error("No native filament selections in this slice.");
                 requests = ExtendedAMSLite::normalize_execution_requests(std::move(requests), int(m_gcode_result->filament_change_sequence.front()));
                 pending->spec.plan = ExtendedAMSLite::plan_fixed_batches(requests, pending->spec.slots, pending->spec.plan.filament_slots);
+                pending->spec.magnet_pauses = MagnetPockets::insertion_heights(wxGetApp().plater()->model().get_curr_plate_custom_gcodes());
                 ExtendedAMSLite::verify_execution(pending->spec);
                 pending->encoded = true;
                 pending->scheduled = false;

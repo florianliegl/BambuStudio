@@ -1,5 +1,9 @@
 # Extended AMS Lite
 
+For image keychains with embedded magnets, see
+[Automatic magnet pockets](MAGNET-POCKETS.md): fitted cylindrical negatives,
+selectable counts, symmetric placement and a pause before two closing layers.
+
 Print eight or more virtual PLA colors on a Bambu Lab A1 with four AMS Lite slots.
 The planner prioritizes fewer visits, groups spool replacements into one pause,
 and carries the last loaded batch into the next layer. Virtual colors retain
@@ -58,7 +62,8 @@ Stay beside the printer for this first complete eight-color acceptance print.
 The execution path currently requires a single-nozzle **A1**, printing **by
 layer**, **PLA throughout**, one four-slot AMS Lite and native Studio LAN
 submission with Developer Mode enabled. The original A1 change macro handles
-reload and purge. Existing manual/custom layer G-code must be removed first.
+reload and purge. Existing manual/custom layer G-code must be removed first,
+except managed insertion pauses from the magnet-pocket tool.
 A named experimental probe macro must not be combined with execution mode.
 
 Imported G-code can be analyzed but cannot be prepared. Other printers, mixed
@@ -110,13 +115,14 @@ editable-project save/import/preset reconciliation and prime-tower edits. The
 standalone suite includes exhaustive optimum comparisons, randomized replay,
 serialization and corrupt/missing pause guards.
 
-Local Release results: **38,322 standalone checks** and **222 assertions in five
-real-slicer cases**, before the optional desktop-fixture export assertions.
-The fixture export also passed **38 assertions**. The new runtime compiled,
-linked, loaded the editable eight-color project and opened a responsive native
+Local Release results with magnet pockets: **38,325 standalone checks** and
+**336 assertions in seven real-slicer cases**, before optional fixture export
+assertions. The magnet demo export passed another **50 assertions**.
+The earlier eight-color fixture export also passed **38 assertions**. The latest
+runtime compiled, linked, loaded the editable magnet demo and opened a responsive native
 window; its startup log contained no error/fatal entries. Existing Studio windows
-were preserved. Desktop shortcuts point to the separate execution runtime and
-settings directory under `build/extended-ams-execution*`.
+were preserved. Desktop shortcuts point to the separate magnet-tool runtime and
+settings directory under `build/extended-ams-magnets*`.
 
 The native CoolingBuffer logs the special unload tool `T255` as an invalid virtual
 tool during slicing. It retains the command; the execution validator checks the

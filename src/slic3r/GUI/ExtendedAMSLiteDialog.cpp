@@ -28,6 +28,7 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
         m_filaments = ready->filaments;
         m_requests = ready->plan.requests;
         m_plan = ready->plan;
+        m_magnet_pauses = ready->magnet_pauses;
     } else {
         std::lock_guard<std::mutex> guard(result.result_mutex);
         if (!result.used_mixed_filaments.empty() || result.extruder_types.size() > 1)
@@ -47,6 +48,11 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     auto* status = new wxStaticText(this, wxID_ANY, ready ?
         _L("Print prepared. At each swap pause the active filament is unloaded. Replace the spools shown below, feed each to the AMS inlet, then press Resume on the printer. Keep all eight colors PLA. Choose the visit manually; printer pauses do not identify a visit.") :
         _L("Prepare an A1 PLA print with one unload-and-swap pause per visit. The normal filament-change and purge commands reload the next color. Print directly from this Studio using LAN-only Developer Mode."));
+    if (ready && !ready->magnet_pauses.empty()) {
+        wxString text = status->GetLabel() + "\n\n" + _L("Separate magnet insertion pauses at Z:");
+        for (double z : ready->magnet_pauses) text += wxString::Format(" %.2f mm", z);
+        status->SetLabel(text + ". " + _L("At these pauses insert magnets and keep all spools loaded. They do not advance the spool-swap visits."));
+    }
     status->Wrap(85 * em_unit());
     root->Add(status, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
     m_optimize = new wxCheckBox(this, wxID_ANY, _L("Optimize layers: keep the loaded batch for the next layer"));
@@ -257,6 +263,7 @@ AMS::ExecutionSpec ExtendedAMSLiteDialog::proposal() const
     AMS::ExecutionSpec spec;
     spec.filaments = m_filaments;
     spec.plan = m_plan;
+    spec.magnet_pauses = m_magnet_pauses;
     for (std::size_t s = 0; s < 4; ++s) spec.slots.push_back({m_initial[s]->GetSelection() - 1, m_locked[s]->GetValue()});
     return spec;
 }

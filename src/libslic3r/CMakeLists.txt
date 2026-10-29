@@ -28,6 +28,8 @@ if (TARGET OpenVDB::openvdb)
 endif()
 
 set(lisbslic3r_sources
+    MagnetPockets.cpp
+    MagnetPockets.hpp
     ExtendedAMSLite/Planner.cpp
     ExtendedAMSLite/Planner.hpp
     ArcFitter.cpp
