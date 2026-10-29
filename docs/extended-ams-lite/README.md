@@ -116,8 +116,10 @@ The dedicated `extended_ams_lite_integration` target links the actual slicer.
 It tests real processed virtual selections, retained layer/material/color metadata,
 native sequence serialization/callbacks, and a real eight-color coupon slice and
 G-code export. All eight colors are checked on every exported layer, with four
-grouped visits and sixteen replacements. **86 assertions across 3 integration
-test cases pass locally.**
+grouped visits and sixteen replacements. A fourth case loads the real A1 0.2 mm
+presets, validates and slices an attended inactive-slot replacement probe, saves
+and reloads its native project, and confirms its pause survives reslicing.
+**115 assertions across 4 integration test cases pass locally.**
 
 ```powershell
 # After configuring the full application with dependencies and SLIC3R_BUILD_TESTS=ON:
@@ -143,7 +145,9 @@ The user's workflow requires the active filament to be pulled back as during a
 normal AMS change before replacing its spool. The A1 profile contains normal
 tool-change macros and an end-of-print `T255` unload path. An end-of-print macro
 does not establish safe mid-print reuse, reload, thermal state or resume behavior.
-The printer's firmware version and a supported mid-print procedure remain needed.
+The user reported firmware **01.08.01.00** and an installed **0.2 mm nozzle**.
+The [small attended test](A1-01.08.01.00-TEST.md) is prepared and software-validated;
+its physical spool replacement and resume still need observation.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for source evidence and remaining boundaries.
 
 Base: stable [`v02.08.02.61`](https://github.com/bambulab/BambuStudio/releases/tag/v02.08.02.61),

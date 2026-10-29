@@ -6,7 +6,12 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Preset.hpp"
+#include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/Utils.hpp"
 #include <boost/filesystem.hpp>
+#include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <set>
 
@@ -199,4 +204,135 @@ TEST_CASE("Real slicing honors eight-color batch layer orders", "[ExtendedAMSLit
     for (unsigned layer = 1; layer <= 4; ++layer)
         CHECK(extruded[layer] == std::set<int>({0, 1, 2, 3, 4, 5, 6, 7}));
     CHECK(processed.pause_printing.empty());
+}
+
+TEST_CASE("A1 inactive-slot replacement probe pauses before reloading slot one", "[ExtendedAMSLite][HardwareProbe]")
+{
+    namespace fs = boost::filesystem;
+    const auto resources = fs::path(TEST_DATA_DIR).parent_path().parent_path() / "resources";
+    REQUIRE(fs::exists(resources / "profiles" / "BBL.json"));
+    set_resources_dir(resources.string());
+    PresetBundle presets;
+    presets.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    REQUIRE(presets.printers.select_preset_by_name("Bambu Lab A1 0.2 nozzle", true, true));
+    REQUIRE(presets.prints.select_preset_by_name("0.10mm Standard @BBL A1 0.2 nozzle", true, true));
+    REQUIRE(presets.filaments.select_preset_by_name("Generic PLA @BBL A1 0.2 nozzle", true, true));
+    presets.filament_presets.assign(2, "Generic PLA @BBL A1 0.2 nozzle");
+    presets.set_num_filaments(2);
+    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings({"#E34B4B", "#2463EB"}));
+    auto config = presets.full_config();
+    config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPTE));
+    config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(0.1));
+    config.set_key_value("layer_height", new ConfigOptionFloat(0.1));
+    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats({0., 160., 160., 0.}));
+    REQUIRE(config.opt_string("printer_settings_id") == "Bambu Lab A1 0.2 nozzle");
+    REQUIRE(config.option<ConfigOptionFloats>("nozzle_diameter")->values.front() == Approx(0.2));
+    REQUIRE(config.opt_string("machine_pause_gcode") == "M400 U1");
+    REQUIRE(config.opt_string("change_filament_gcode").find("M620 S[next_extruder]A") != std::string::npos);
+
+    Model model;
+    auto* object = model.add_object();
+    object->name = "AMS Lite one-swap test - slot 1, slot 2, replacement in slot 1";
+    for (int band = 0; band < 3; ++band) {
+        TriangleMesh mesh = make_cube(12, 8, 0.3);
+        mesh.translate(122.f, 124.f, float(band) * 0.3f);
+        auto* volume = object->add_volume(std::move(mesh));
+        volume->name = band == 0 ? "Bottom - slot 1 original" : band == 1 ? "Middle - slot 2 unchanged" : "Top - slot 1 replacement";
+        volume->config.set("extruder", band == 1 ? 2 : 1);
+    }
+    object->add_instance();
+    object->ensure_on_bed();
+    auto& custom = model.plates_custom_gcodes[0];
+    custom.mode = CustomGCode::MultiExtruder;
+    custom.gcodes.push_back({0.7, CustomGCode::PausePrint, 2, "", "Replace unloaded slot 1 only. Leave slot 2 loaded."});
+
+    Print print;
+    print.set_status_silent();
+    print.set_BBL_Printer(true);
+    print.set_plate_index(0);
+    print.set_plate_origin(Vec3d::Zero());
+    print.set_extruder_filament_info(presets.get_extruder_filament_info());
+    print.apply(model, config);
+    const auto validation = print.validate();
+    INFO(validation.string);
+    REQUIRE(validation.string.empty());
+    print.process();
+    struct ProbeFiles {
+        fs::path gcode = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.gcode");
+        fs::path project = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.3mf");
+        ~ProbeFiles() { boost::system::error_code ignored; fs::remove(gcode, ignored); fs::remove(project, ignored); }
+    } files;
+    GCodeProcessorResult result;
+    print.export_gcode(files.gcode.string(), &result, nullptr);
+    REQUIRE(result.pause_printing.size() == 1);
+    REQUIRE(result.pause_printing.front().layer_id == 7);
+    const auto pause = std::find_if(result.moves.begin(), result.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
+    REQUIRE(pause != result.moves.end());
+    REQUIRE(pause->extruder_id == 1); // zero-based virtual filament 2 is still loaded
+    const auto next_extrusion = std::find_if(pause + 1, result.moves.end(), [](const auto& move) { return move.type == EMoveType::Extrude; });
+    REQUIRE(next_extrusion != result.moves.end());
+    REQUIRE(next_extrusion->extruder_id == 0);
+    std::ifstream generated(files.gcode.string(), std::ios::binary);
+    const std::string gcode((std::istreambuf_iterator<char>(generated)), std::istreambuf_iterator<char>());
+    generated.close(); // Windows must release the file before the round-trip export replaces it.
+    const auto pause_tag = gcode.find(";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print));
+    REQUIRE(pause_tag != std::string::npos);
+    const auto native_pause = gcode.find("M400 U1", pause_tag);
+    REQUIRE(native_pause != std::string::npos);
+    REQUIRE(gcode.find("\nT0\n", native_pause) != std::string::npos);
+
+    PlateData plate;
+    plate.plate_index = 0;
+    plate.objects_and_instances.emplace_back(0, 0);
+    plate.plate_name = "One swap - firmware 01.08.01.00";
+    const std::string project_path = files.project.string();
+    StoreParams params;
+    params.path = project_path.c_str();
+    params.model = &model;
+    params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    REQUIRE(store_bbs_3mf(params));
+
+    DynamicPrintConfig loaded_config;
+    ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
+    Model loaded_model;
+    PlateDataPtrs plates;
+    std::vector<Preset*> embedded;
+    bool is_bambu = false;
+    Semver version;
+    REQUIRE(load_bbs_3mf(project_path.c_str(), &loaded_config, &substitutions, &loaded_model, &plates,
+        &embedded, &is_bambu, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::Silence));
+    REQUIRE(loaded_model.objects.size() == 1);
+    CHECK(loaded_model.objects.front()->volumes.size() == 3);
+    REQUIRE(loaded_model.plates_custom_gcodes[0].gcodes.size() == 1);
+    CHECK(loaded_model.plates_custom_gcodes[0].gcodes.front().type == CustomGCode::PausePrint);
+    CHECK(loaded_config.opt_string("printer_settings_id") == "Bambu Lab A1 0.2 nozzle");
+    Print reopened;
+    reopened.set_status_silent();
+    reopened.set_BBL_Printer(true);
+    reopened.set_plate_index(0);
+    reopened.set_plate_origin(Vec3d::Zero());
+    reopened.set_extruder_filament_info(presets.get_extruder_filament_info());
+    reopened.apply(loaded_model, loaded_config);
+    reopened.process();
+    GCodeProcessorResult resliced;
+    reopened.export_gcode(files.gcode.string(), &resliced, nullptr);
+    REQUIRE(resliced.pause_printing.size() == 1);
+    REQUIRE(resliced.pause_printing.front().layer_id == 7);
+    const auto repeated_pause = std::find_if(resliced.moves.begin(), resliced.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
+    REQUIRE(repeated_pause != resliced.moves.end());
+    REQUIRE(repeated_pause->extruder_id == 1);
+    release_PlateData_list(plates);
+    for (auto* preset : embedded) delete preset;
+    // An explicit output directory is needed to retain a human-run hardware
+    // probe. Routine integration checks create only temporary local files.
+    if (const char* destination = std::getenv("EXTENDED_AMS_PROBE_OUTPUT")) {
+        fs::path folder = fs::absolute(destination);
+        fs::create_directories(folder);
+        const auto output = folder / "A1 AMS Lite one-swap test.3mf";
+        REQUIRE_FALSE(fs::exists(output));
+        fs::copy_file(files.project, output);
+    }
 }

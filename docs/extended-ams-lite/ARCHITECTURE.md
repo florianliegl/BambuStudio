@@ -45,13 +45,15 @@ A1 job; supported unloading and loading while paused; replacing the active spool
 changing the virtual-to-slot mapping in a running job; whether resumed selections
 use the revised mapping; buffered motion ordering at within-layer pauses; RFIDs
 and slot metadata; expected purge and thermal state; exact pause/resume behavior
-on the user's A1 firmware version. The firmware version was requested but has
-not been provided. The user confirmed active filament needs retraction as during
+on the user's A1 firmware version. The user reported **01.08.01.00**, an installed
+**0.2 mm nozzle**, and four different PLA spools. The user confirmed active filament needs retraction as during
 a normal change; a repeatable mid-print command sequence was not supplied.
-The official Wiki could not be retrieved during this session; no conclusion about
-hardware support is inferred from those inaccessible pages.
+The [attended one-slot test](A1-01.08.01.00-TEST.md) uses normal changes 1→2→1
+and a native pause while slot 2 is active, so only inactive slot 1 is replaced.
+Its real slicing and project round trip pass locally; physical results remain
+pending. It does not establish active-spool replacement or an all-four batch.
 
-**Unavailable in this implementation:** an execution backend, automatic pauses,
+**Unavailable in this implementation:** a batch execution backend, automatic swap pauses,
 tool/mapping rewrite, automatic resume, automatic pause markers, certified material
 compatibility, live swap notifications, and Handy custom messages. No undocumented
 G-code or arbitrary G-code substitution has been introduced.

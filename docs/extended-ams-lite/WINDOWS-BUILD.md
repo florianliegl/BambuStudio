@@ -128,7 +128,7 @@ This test exercises the real G-code processor with eight virtual filaments
 mapped to one physical extruder. It is separate from the dependency-free planner
 tests and does not validate printer firmware.
 
-Local result after batch integration: **86 assertions in 3 test cases passed**,
+Local result with the A1 0.2 mm probe: **115 assertions in 4 test cases passed**,
 including a real eight-color/four-layer model slice and normal G-code export.
 Every layer retains eight colors; replay verifies four batch visits and sixteen
 spool replacements. The fixture initializes schema-backed options and explicit
@@ -137,6 +137,12 @@ as a real printer profile does. The test target links the actual HTTP and
 encryption utilities required by the slicer's logging code and instantiates the
 upstream NanoSVG header implementation; no printer or GUI application is started
 by this test.
+
+The fourth case uses real bundled A1 0.2 mm presets for a 12 x 8 x 0.9 mm coupon.
+It validates normal slicing/export and native project save/reload/reslice with
+one pause on layer 7 while slot 2 is selected. See the
+[attended test instructions](A1-01.08.01.00-TEST.md); software checks do not prove
+physical spool replacement.
 
 The release's upstream aggregate `libslic3r_tests` currently fails to compile
 because older OBJ, rotation and raster tests use APIs that have changed. Those
@@ -157,6 +163,27 @@ configuration. On first launch, select the A1 profile in the normal setup flow.
 You can import an existing project/model, configure virtual filaments, slice,
 and open the dry-run swap planner from Preview. No printer connection is needed
 for this planning workflow.
+
+### Network plugin and development server setting
+
+This local development build defaults `iot_environment` to `2` (pre-production).
+Its plugin installation failed because `api-pre.bambulab.net` returned an error.
+Production environment `3` uses `api.bambulab.com` for the Europe region.
+Select the production environment in the development build's preferences and
+restart before installing the normal network plugin. If editing the separate
+`build/extended-ams-userdata/BambuStudio.conf` directly, close Studio first,
+back it up, and preserve its JSON plus Windows checksum format.
+
+On 2026-10-29 the public resource API for `slicer/plugins/cloud=02.08.02.00`
+returned Windows plugin **02.08.02.60**. The official package was installed only
+under the custom build's `plugins` directory. Its `bambu_networking.dll` has a
+valid Authenticode signature from Shanghai Lunkuo Technology Co., Ltd.
+Package SHA256: `212d6c4489711b1ff80677fd1166afd38e7201374e61894ba08abc556b118e9d`.
+Startup logs confirm successful module loading and creation of the network agent,
+and the application opens and responds. This verifies plugin loading, not printer
+connectivity or print submission. The separate configuration requires its own
+normal Bambu account login and printer selection; no login tokens were copied
+from the installed Studio.
 
 This is a repository build, not an installer or a self-contained portable
 package: keep the repository and its resource directory in place. Automatic
