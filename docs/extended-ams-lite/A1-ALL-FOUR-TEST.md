@@ -37,9 +37,13 @@ eight-identity execution backend.
 
 ## Run the attended test
 
-1. Open the desktop **AMS Lite all-four test** shortcut. It opens the pre-sliced
-   `.gcode.3mf` in custom Studio. An editable `.3mf` is also supplied. If reslicing,
-   retain its modified printer G-code, A1 0.2 mm nozzle, 0.1 mm layers and geometry.
+1. Open the desktop **AMS Lite all-four test** shortcut. It opens the editable
+   `.3mf` in custom Studio. Adjust the prime tower or plate setting as needed,
+   then slice. Retain its modified printer G-code, A1 0.2 mm nozzle, 0.1 mm layers
+   and geometry. Confirm one pause during layer 4 after slicing.
+   The `.gcode.3mf` companion is a fixed slice without model geometry: changing a
+   setting invalidates its toolpaths and leaves an empty plate. Use the editable
+   `.3mf` whenever changing settings.
 2. Keep the printer in LAN-only/Developer Mode. Confirm all four loaded spools
    and the four replacement spools really are PLA, and their printer material
    settings say PLA. Select the actual build plate in the send options.
@@ -63,13 +67,17 @@ colors printed after Resume. Include any exact printer error code.
 
 ## Software verification
 
-The real slicer suite passes **166 assertions in four cases**, including both
+The real slicer suite passes **179 assertions in four cases**, including both
 probe variants. Checks cover the actual extrusion immediately after the pause,
 unload-before-pause ordering, native selections 2→3→4→1 after Resume, exactly one
 pause, project save/reload/reslice and a sliced archive with all four PLA records.
 The active macro is inserted at a tool-change boundary because an earlier
 layer-level placement left old-color prime-tower extrusion after unloading.
 Line-based checks exclude escaped macro text in the configuration header.
+An editable-project regression changes the prime-tower width after reload,
+reslices, and verifies all five meshes, the single layer-4 pause and the first
+post-pause extrusion from slot 2 survive. The desktop shortcut opens that
+editable project rather than the geometry-free fixed slice.
 
 The upstream cooling editor logs special `T255` as an out-of-range virtual tool,
 retains the command and leaves its tracked virtual identity unchanged. The

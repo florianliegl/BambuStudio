@@ -126,7 +126,7 @@ G-code export. All eight colors are checked on every exported layer, with four
 grouped visits and sixteen replacements. A fourth case loads the real A1 0.2 mm
 presets, validates and slices an attended inactive-slot replacement probe, saves
 and reloads its native project, and confirms its pause survives reslicing.
-**166 assertions across 4 integration test cases pass locally**, including the
+**179 assertions across 4 integration test cases pass locally**, including the
 experimental [single-pause all-four probe](A1-ALL-FOUR-TEST.md), whose physical
 active-unload and resume result is still pending.
 

@@ -297,7 +297,8 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
         fs::path gcode = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.gcode");
         fs::path project = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.3mf");
         fs::path sliced = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-%%%%-%%%%.gcode.3mf");
-        ~ProbeFiles() { boost::system::error_code ignored; fs::remove(gcode, ignored); fs::remove(project, ignored); fs::remove(sliced, ignored); }
+        fs::path edited = fs::temp_directory_path() / fs::unique_path("ams-slot-probe-edited-%%%%-%%%%.gcode");
+        ~ProbeFiles() { boost::system::error_code ignored; fs::remove(gcode, ignored); fs::remove(project, ignored); fs::remove(sliced, ignored); fs::remove(edited, ignored); }
     } files;
     GCodeProcessorResult result;
     print.export_gcode(files.gcode.string(), &result, nullptr);
@@ -401,6 +402,33 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
     params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel;
     REQUIRE(store_bbs_3mf(params));
     REQUIRE(fs::file_size(files.sliced) > 0);
+    if (active_unload) {
+        // Regression: the editable project must survive a prime-tower setting
+        // change and reslice. A SkipModel sliced archive cannot provide this.
+        auto edited_config = loaded_config;
+        const double previous_width = edited_config.option<ConfigOptionFloat>("prime_tower_width")->value;
+        edited_config.set_key_value("prime_tower_width", new ConfigOptionFloat(previous_width + 5.));
+        reopened.apply(loaded_model, edited_config);
+        REQUIRE(loaded_model.objects.size() == 1);
+        REQUIRE(loaded_model.objects.front()->volumes.size() == 5);
+        for (const auto* volume : loaded_model.objects.front()->volumes)
+            REQUIRE_FALSE(volume->mesh().empty());
+        const auto edited_validation = reopened.validate();
+        INFO(edited_validation.string);
+        REQUIRE(edited_validation.string.empty());
+        reopened.process();
+        GCodeProcessorResult edited_result;
+        reopened.export_gcode(files.edited.string(), &edited_result, nullptr);
+        REQUIRE(edited_result.pause_printing.size() == 1);
+        REQUIRE(edited_result.pause_printing.front().layer_id == 4);
+        const auto edited_pause = std::find_if(edited_result.moves.begin(), edited_result.moves.end(),
+            [](const auto& move) { return move.type == EMoveType::Pause_Print; });
+        REQUIRE(edited_pause != edited_result.moves.end());
+        const auto edited_extrusion = std::find_if(edited_pause + 1, edited_result.moves.end(),
+            [](const auto& move) { return move.type == EMoveType::Extrude; });
+        REQUIRE(edited_extrusion != edited_result.moves.end());
+        REQUIRE(edited_extrusion->extruder_id == 1);
+    }
     release_PlateData_list(plates);
     for (auto* preset : embedded) delete preset;
     // An explicit output directory is needed to retain a human-run hardware

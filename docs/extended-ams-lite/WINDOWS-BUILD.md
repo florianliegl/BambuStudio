@@ -128,7 +128,7 @@ This test exercises the real G-code processor with eight virtual filaments
 mapped to one physical extruder. It is separate from the dependency-free planner
 tests and does not validate printer firmware.
 
-Local result with both A1 0.2 mm probes: **166 assertions in 4 test cases passed**,
+Local result with both A1 0.2 mm probes: **179 assertions in 4 test cases passed**,
 including a real eight-color/four-layer model slice and normal G-code export.
 Every layer retains eight colors; replay verifies four batch visits and sixteen
 spool replacements. The fixture initializes schema-backed options and explicit
