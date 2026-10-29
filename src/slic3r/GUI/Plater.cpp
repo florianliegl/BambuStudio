@@ -71,6 +71,7 @@
 #include "Gizmos/GLGizmoAlignment.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/ExtendedAMSLite/Probe.hpp"
+#include "libslic3r/ExtendedAMSLite/Execution.hpp"
 #include "libslic3r/ModelArrange.hpp"
 #include "libslic3r/SLA/Hollowing.hpp"
 #include "libslic3r/SLA/SupportPoint.hpp"
@@ -23144,10 +23145,29 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     // fail the save, tell the user which setting is bad, and let them fix it and try again.
     try {
     if ((strategy & SaveStrategy::WithGcode) && (strategy & SaveStrategy::SkipModel) && !(strategy & SaveStrategy::Backup)) {
+        const auto notes = wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes");
+        if (notes.find(ExtendedAMSLite::execution_preparing_tag) != std::string::npos) {
+            MessageDialog(this, _L("AMS Lite preparation is incomplete. Finish Prepare print before exporting or printing."),
+                _L("AMS Lite print not ready"), wxOK | wxICON_WARNING).ShowModal();
+            return -1;
+        }
+        const auto spec = ExtendedAMSLite::execution_from_notes(notes);
         const int first = export_plate_idx >= 0 ? export_plate_idx : 0;
         const int last = export_plate_idx >= 0 ? export_plate_idx + 1 : p->partplate_list.get_plate_count();
         for (int i = first; i < last && i < p->partplate_list.get_plate_count(); ++i) {
             auto* plate = p->partplate_list.get_plate(i);
+            if (spec) {
+                const auto* result = plate->get_slice_result();
+                std::ifstream input(result ? result->filename : std::string{}, std::ios::binary);
+                const auto error = !plate->is_slice_result_ready_for_export() || !input ?
+                    std::string("This plate has no current printable slice.") : ExtendedAMSLite::execution_gcode_error(input, *spec);
+                if (!error.empty()) {
+                    MessageDialog(this, wxString::FromUTF8(error) + "\n\n" +
+                        _L("Disable spool swaps, slice this plate and prepare it again. Use native LAN printing to preserve its slot assignments."),
+                        _L("AMS Lite print not ready"), wxOK | wxICON_WARNING).ShowModal();
+                    return -1;
+                }
+            }
             const auto objects = plate->get_objects_on_this_plate();
             if (std::none_of(objects.begin(), objects.end(), [](const ModelObject* object) {
                 return object->name == ExtendedAMSLite::active_unload_probe_name;

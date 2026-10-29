@@ -1,5 +1,5 @@
 Extended AMS Lite - BATCH PLAN
-Planning only. Automatic printing is unavailable: safe mid-print A1 AMS Lite unload, spool replacement, reload, and resume have not been verified. No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.
+Planning report only. No pauses or print assignments are applied by this report. Use Prepare print in the custom Studio to generate and validate A1 PLA swap pauses, then print with its fixed slot assignments over LAN. Complete every swap before pressing resume.
 
 PROPOSED layer order. Apply in Studio and re-slice to obtain actual positions.
 Visits: 4; spool replacements: 16; color changes: 28

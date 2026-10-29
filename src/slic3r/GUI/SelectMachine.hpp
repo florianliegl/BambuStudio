@@ -570,6 +570,7 @@ public:
     void set_print_type(PrintFromType type) {m_print_type = type;};
     bool Show(bool show);
     bool do_ams_mapping(MachineObject *obj_,bool use_ams);
+    bool apply_extended_ams_mapping(MachineObject* obj);
     bool get_ams_mapping_result(std::string& mapping_array_str, std::string& mapping_array_str2, std::string& ams_mapping_info) const;
     bool build_nozzles_info(std::string& nozzles_info);
     bool can_hybrid_mapping(MachineObject *obj_) const;

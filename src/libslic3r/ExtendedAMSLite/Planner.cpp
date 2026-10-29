@@ -1,8 +1,10 @@
 #include "Planner.hpp"
+#include "Execution.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <iomanip>
 #include <map>
 #include <set>
 #include <sstream>
@@ -392,9 +394,9 @@ void verify(const std::vector<Request>& requests, std::size_t count, const std::
 
 const char* execution_blocker()
 {
-    return "Planning only. Automatic printing is unavailable: safe mid-print A1 AMS Lite "
-           "unload, spool replacement, reload, and resume have not been verified. "
-           "No pauses or physical slot mappings have been written to G-code. Do not print this schedule as a four-slot job.";
+    return "Planning report only. No pauses or print assignments are applied by this report. "
+           "Use Prepare print in the custom Studio to generate and validate A1 PLA swap pauses, "
+           "then print with its fixed slot assignments over LAN. Complete every swap before pressing resume.";
 }
 
 std::string format_batch_schedule(const std::vector<Filament>& filaments, const BatchPlan& result)
@@ -539,6 +541,318 @@ small{display:block;color:#5d6d70}footer{margin-top:24px;color:#5d6d70;font-size
            "Material compatibility, purge, and printer behavior are not validated by this report. "
            "IDs shown as V1, V2, ... retain the original filament profiles.</footer></main></html>";
     return out.str();
+}
+
+std::vector<Request> normalize_execution_requests(std::vector<Request> requests, int initial)
+{
+    auto first = requests.begin();
+    while (first != requests.end() && first->layer == 0 && first->filament != initial) ++first;
+    requests.erase(requests.begin(), first);
+    if (requests.empty() || requests.front().filament != initial)
+        throw std::invalid_argument("The initial tool selection is inconsistent. Re-slice with the standard A1 profile.");
+    return requests;
+}
+
+BatchPlan plan_fixed_batches(const std::vector<Request>& requests, const std::vector<Slot>& slots,
+                             const std::vector<int>& mapping)
+{
+    validate_inputs(requests, mapping.size(), slots);
+    BatchPlan result;
+    result.requests = requests;
+    result.filament_slots = mapping;
+    for (const auto& r : requests)
+        if (mapping[r.filament] < 0 || std::size_t(mapping[r.filament]) >= slots.size())
+            throw std::invalid_argument("A required color has no physical AMS slot.");
+    for (std::size_t s = 0; s < slots.size(); ++s) {
+        int initial = slots[s].filament;
+        if (initial < 0) for (const auto& r : requests) if (mapping[r.filament] == int(s)) { initial = r.filament; break; }
+        if (initial >= 0 && mapping[initial] != int(s))
+            throw std::invalid_argument("Initial loading conflicts with a fixed slot assignment.");
+        result.schedule.initial_slots.push_back(initial);
+    }
+    auto loaded = result.schedule.initial_slots;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+        const auto& r = requests[i];
+        const auto slot = std::size_t(mapping[r.filament]);
+        if (loaded[slot] != r.filament) {
+            std::vector<int> upcoming(slots.size(), -1);
+            for (std::size_t j = i; j < requests.size(); ++j) {
+                const int id = requests[j].filament, physical = mapping[id];
+                if (upcoming[physical] >= 0 && upcoming[physical] != id) break;
+                upcoming[physical] = id;
+            }
+            Stop stop{i, {}};
+            for (std::size_t s = 0; s < slots.size(); ++s) if (upcoming[s] >= 0 && loaded[s] != upcoming[s]) {
+                if (slots[s].locked) throw std::invalid_argument("A swap would replace a locked spool.");
+                stop.replacements.push_back({s, loaded[s], upcoming[s]});
+                loaded[s] = upcoming[s];
+                ++result.spool_replacements;
+            }
+            result.schedule.stops.push_back(std::move(stop));
+        }
+        result.schedule.request_slots.push_back(slot);
+        if (i && requests[i - 1].filament != r.filament) ++result.color_changes;
+    }
+    verify_batches(slots, result);
+    return result;
+}
+
+void verify_execution(const ExecutionSpec& spec)
+{
+    if (spec.job_id.size() != 16 || !std::all_of(spec.job_id.begin(), spec.job_id.end(), [](unsigned char c) { return std::isxdigit(c) != 0; }))
+        throw std::invalid_argument("Invalid Extended AMS Lite job identifier.");
+    if (spec.slots.size() != 4 || spec.filaments.empty() || spec.filaments.size() > 254 ||
+        spec.plan.requests.empty() || spec.plan.requests.size() > 200000 || spec.plan.reordered ||
+        spec.plan.filament_slots.size() != spec.filaments.size())
+        throw std::invalid_argument("Extended AMS Lite needs a current, verified four-slot plan.");
+    for (const auto& f : spec.filaments)
+        if (f.material != "PLA") throw std::invalid_argument("Extended AMS Lite printing currently supports PLA colors only.");
+    verify_batches(spec.slots, spec.plan);
+    if (!spec.plan.schedule.stops.empty() && spec.plan.schedule.stops.front().before_request == 0)
+        throw std::invalid_argument("Load the first required color before starting. Use Auto for the initial slots and prepare again.");
+}
+
+std::string serialize_execution(const ExecutionSpec& spec)
+{
+    verify_execution(spec);
+    std::ostringstream out;
+    out << "EAMS1 " << spec.job_id << ' ' << spec.filaments.size() << ' ' << spec.plan.requests.size() << ' ' << spec.plan.schedule.stops.size() << '\n';
+    for (const auto& f : spec.filaments) out << std::quoted(f.name) << ' ' << std::quoted(f.material) << ' ' << std::quoted(f.color) << '\n';
+    for (std::size_t s = 0; s < 4; ++s) out << spec.slots[s].filament << ' ' << spec.slots[s].locked << ' ' << spec.plan.schedule.initial_slots[s] << '\n';
+    for (int slot : spec.plan.filament_slots) out << slot << ' ';
+    out << '\n';
+    for (const auto& r : spec.plan.requests) out << r.filament << ' ' << r.layer << ' ' << r.move << ' ' << r.gcode_line << '\n';
+    for (const auto& stop : spec.plan.schedule.stops) {
+        out << stop.before_request << ' ' << stop.replacements.size() << '\n';
+        for (const auto& r : stop.replacements) out << r.slot << ' ' << r.remove << ' ' << r.insert << '\n';
+    }
+    out << "END\n";
+    return out.str();
+}
+
+ExecutionSpec deserialize_execution(const std::string& text)
+{
+    const auto invalid = [] { throw std::invalid_argument("The Extended AMS Lite plan is incomplete. Disable swaps, slice, and prepare again."); };
+    if (text.size() > 10 * 1024 * 1024) invalid();
+    std::istringstream in(text);
+    ExecutionSpec spec;
+    std::string tag;
+    std::size_t filaments = 0, requests = 0, stops = 0;
+    if (!(in >> tag >> spec.job_id >> filaments >> requests >> stops) || tag != "EAMS1" || filaments == 0 || filaments > 254 || requests == 0 || requests > 200000 || stops > requests) invalid();
+    spec.filaments.resize(filaments);
+    for (auto& f : spec.filaments) if (!(in >> std::quoted(f.name) >> std::quoted(f.material) >> std::quoted(f.color))) invalid();
+    spec.slots.resize(4);
+    spec.plan.schedule.initial_slots.resize(4);
+    for (std::size_t s = 0; s < 4; ++s)
+        if (!(in >> spec.slots[s].filament >> spec.slots[s].locked >> spec.plan.schedule.initial_slots[s])) invalid();
+    spec.plan.filament_slots.resize(filaments);
+    for (auto& slot : spec.plan.filament_slots) if (!(in >> slot)) invalid();
+    spec.plan.requests.resize(requests);
+    for (auto& r : spec.plan.requests) {
+        if (!(in >> r.filament >> r.layer >> r.move >> r.gcode_line) || r.filament < 0 || std::size_t(r.filament) >= filaments) invalid();
+        const int slot = spec.plan.filament_slots[r.filament];
+        if (slot < 0 || slot > 3) invalid();
+        spec.plan.schedule.request_slots.push_back(std::size_t(slot));
+    }
+    for (std::size_t i = 0; i < stops; ++i) {
+        Stop stop;
+        std::size_t count = 0;
+        if (!(in >> stop.before_request >> count) || count == 0 || count > 4) invalid();
+        stop.replacements.resize(count);
+        for (auto& r : stop.replacements) if (!(in >> r.slot >> r.remove >> r.insert)) invalid();
+        spec.plan.spool_replacements += count;
+        spec.plan.schedule.stops.push_back(std::move(stop));
+    }
+    for (std::size_t i = 1; i < requests; ++i)
+        if (spec.plan.requests[i - 1].filament != spec.plan.requests[i].filament) ++spec.plan.color_changes;
+    if (!(in >> tag) || tag != "END" || (in >> tag)) invalid();
+    verify_execution(spec);
+    return spec;
+}
+
+namespace {
+constexpr const char* execution_begin = "[[EXTENDED_AMS_LITE_V1]]";
+constexpr const char* execution_end = "[[/EXTENDED_AMS_LITE]]";
+}
+
+std::optional<ExecutionSpec> execution_from_notes(const std::string& notes)
+{
+    const auto begin = notes.find(execution_begin);
+    if (begin == std::string::npos) return std::nullopt;
+    const auto data = begin + std::string(execution_begin).size();
+    const auto end = notes.find(execution_end, data);
+    if (end == std::string::npos || notes.find(execution_begin, data) != std::string::npos)
+        throw std::invalid_argument("The Extended AMS Lite settings are incomplete. Disable swaps and prepare again.");
+    return deserialize_execution(notes.substr(data, end - data));
+}
+
+std::string notes_with_execution(const std::string& notes, const std::optional<ExecutionSpec>& spec)
+{
+    std::string result = notes;
+    for (auto position = result.find(execution_preparing_tag); position != std::string::npos; position = result.find(execution_preparing_tag))
+        result.erase(position, std::string(execution_preparing_tag).size());
+    const auto begin = result.find(execution_begin);
+    if (begin != std::string::npos) {
+        const auto end = result.find(execution_end, begin);
+        result.erase(begin, end == std::string::npos ? std::string::npos : end + std::string(execution_end).size() - begin);
+    }
+    if (spec) result += std::string("\n") + execution_begin + "\n" + serialize_execution(*spec) + execution_end;
+    return result;
+}
+
+std::string execution_job_prefix(const ExecutionSpec& spec) { return "EAMS-" + spec.job_id; }
+
+std::string format_execution_guide(const ExecutionSpec& spec, bool html)
+{
+    std::ostringstream out;
+    out << "Extended AMS Lite - print swap guide\n";
+    out << "A1 / PLA / four AMS Lite slots / LAN Developer Mode\n"
+        << spec.plan.schedule.stops.size() << " visits, one pause per visit.\n\n"
+        << "Load these first:\n";
+    for (std::size_t s = 0; s < 4; ++s)
+        out << "Slot " << s + 1 << ": " << label(spec.filaments, spec.plan.schedule.initial_slots[s]) << '\n';
+    out << "\nAt a swap pause, the active filament is already unloaded. Replace all spools listed for that visit. "
+           "Feed each replacement to the AMS inlet. Keep other spools loaded. Press Resume only after every replacement is complete. "
+           "Do not change the job's fixed slot mapping. An error or manual pause does not mean a swap visit.\n";
+    for (std::size_t v = 0; v < spec.plan.schedule.stops.size(); ++v) {
+        const auto& stop = spec.plan.schedule.stops[v];
+        const auto& request = spec.plan.requests[stop.before_request];
+        out << "\nVisit " << v + 1 << " of " << spec.plan.schedule.stops.size() << " - Layer " << request.layer << '\n';
+        for (const auto& swap : stop.replacements)
+            out << "Slot " << swap.slot + 1 << ": remove " << label(spec.filaments, swap.remove)
+                << " -> insert " << label(spec.filaments, swap.insert) << '\n';
+        out << "Next color: " << label(spec.filaments, request.filament) << '\n';
+    }
+    if (!html) return out.str();
+    return "<!doctype html><html><meta charset=utf-8><title>AMS Lite swap guide</title>"
+           "<style>body{font:18px system-ui;max-width:900px;margin:32px auto;padding:16px}pre{white-space:pre-wrap;line-height:1.6}</style>"
+           "<h1>Extended AMS Lite</h1><pre>" + escape_html(out.str()) + "</pre></html>";
+}
+
+ExecutionSession::ExecutionSession(ExecutionSpec spec) : m_spec(std::move(spec)), m_loaded(m_spec.plan.schedule.initial_slots)
+{ verify_execution(m_spec); }
+
+ExecutionStep ExecutionSession::begin(int filament)
+{
+    if (m_started || m_spec.plan.requests.front().filament != filament)
+        throw std::runtime_error("The initial color changed. Disable swaps, slice, and prepare the AMS Lite plan again.");
+    m_started = true;
+    return {0, filament, m_spec.plan.requests.front().layer, std::nullopt};
+}
+
+std::optional<ExecutionStep> ExecutionSession::change(int filament, unsigned int layer)
+{
+    if (!m_started) throw std::runtime_error("Extended AMS Lite was not initialized before a tool change.");
+    if (m_spec.plan.requests[m_cursor].filament == filament) return std::nullopt;
+    std::size_t next = m_cursor + 1;
+    while (next < m_spec.plan.requests.size() && m_spec.plan.requests[next].filament == m_spec.plan.requests[m_cursor].filament) ++next;
+    if (next == m_spec.plan.requests.size() || m_spec.plan.requests[next].filament != filament || m_spec.plan.requests[next].layer != layer)
+        throw std::runtime_error("The sliced color order or layer positions changed. Disable swaps, slice, and prepare the AMS Lite plan again.");
+    ExecutionStep step{next, filament, layer, std::nullopt};
+    const auto& stops = m_spec.plan.schedule.stops;
+    if (m_next_visit < stops.size() && stops[m_next_visit].before_request == next) {
+        step.visit = m_next_visit;
+        for (const auto& r : stops[m_next_visit].replacements) {
+            if (m_loaded[r.slot] != r.remove) throw std::runtime_error("The AMS Lite loading state does not match its plan.");
+            m_loaded[r.slot] = r.insert;
+        }
+        ++m_next_visit;
+    }
+    const int slot = m_spec.plan.filament_slots[filament];
+    if (m_loaded[slot] != filament) throw std::runtime_error("The next AMS Lite color is unavailable. Prepare the plan again.");
+    m_cursor = next;
+    return step;
+}
+
+void ExecutionSession::finish() const
+{
+    if (!m_started || m_next_visit != m_spec.plan.schedule.stops.size())
+        throw std::runtime_error("The sliced job did not execute every planned AMS Lite visit.");
+    for (std::size_t i = m_cursor + 1; i < m_spec.plan.requests.size(); ++i)
+        if (m_spec.plan.requests[i].filament != m_spec.plan.requests[m_cursor].filament)
+            throw std::runtime_error("The sliced job ended before its planned AMS Lite colors. Prepare again.");
+}
+
+std::string execution_selection_marker(const ExecutionStep& step)
+{
+    return "; EAMS_SELECT " + std::to_string(step.request) + " " + std::to_string(step.filament) + " " + std::to_string(step.layer) + "\n";
+}
+
+std::string execution_gcode_error(std::istream& input, const ExecutionSpec& spec)
+{
+    try { verify_execution(spec); } catch (const std::exception& e) { return e.what(); }
+    std::vector<std::size_t> events{0};
+    for (std::size_t i = 1; i < spec.plan.requests.size(); ++i)
+        if (spec.plan.requests[i].filament != spec.plan.requests[i - 1].filament) events.push_back(i);
+    auto loaded = spec.plan.schedule.initial_slots;
+    std::size_t selects = 0, visits = 0, pauses = 0;
+    int pending = -1, current = -1;
+    bool header = false, end = false, visit_open = false, scope = false, unloaded = false, closed = false;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("; EAMS_JOB ", 0) == 0) {
+            if (header || line.substr(11) != spec.job_id) return "The slice belongs to a different AMS Lite job.";
+            header = true;
+        } else if (line.rfind("; EAMS_END ", 0) == 0) {
+            if (end || line.substr(11) != spec.job_id) return "The AMS Lite slice has an invalid end marker.";
+            end = true;
+        } else if (line.rfind("; EAMS_VISIT ", 0) == 0) {
+            std::istringstream row(line.substr(13));
+            std::size_t visit = 0, request = 0;
+            if (!(row >> visit >> request) || visit != visits || visit >= spec.plan.schedule.stops.size() ||
+                request != spec.plan.schedule.stops[visit].before_request || visit_open || pending >= 0)
+                return "An AMS Lite visit does not match its schedule.";
+            visit_open = true; scope = false; closed = false;
+            ++visits;
+        } else if (line.rfind("; EAMS_SELECT ", 0) == 0) {
+            std::istringstream row(line.substr(14));
+            std::size_t index = 0; int id = -1; unsigned int layer = 0;
+            if (!(row >> index >> id >> layer) || !header || selects >= events.size() || index != events[selects] ||
+                spec.plan.requests[index].filament != id || spec.plan.requests[index].layer != layer || pending >= 0 || visit_open)
+                return "The sliced filament selections do not match the AMS Lite plan.";
+            pending = id; ++selects;
+        }
+        std::istringstream words(line.substr(0, line.find(';')));
+        std::string command, parameter;
+        words >> command >> parameter;
+        if (visit_open && command == "M620" && parameter == "S255") scope = true;
+        if (command == "T255") {
+            if (visit_open && !scope) return "An AMS Lite unload has no native command scope.";
+            unloaded = true;
+        }
+        if (visit_open && command == "M621" && parameter == "S255" && unloaded) closed = true;
+        if (command == "M400" && parameter == "U1") {
+            if (!visit_open || !unloaded || !closed) return "A swap pause is missing its completed active unload.";
+            for (const auto& r : spec.plan.schedule.stops[pauses].replacements) {
+                if (loaded[r.slot] != r.remove) return "A swap instruction has a stale loading state.";
+                loaded[r.slot] = r.insert;
+            }
+            visit_open = false; ++pauses;
+        }
+        if (command.size() > 1 && command.front() == 'T' && std::isdigit(static_cast<unsigned char>(command[1]))) {
+            int id = -1;
+            try { id = std::stoi(command.substr(1)); } catch (...) { return "Unreadable tool selection in AMS Lite job."; }
+            if (id >= 0 && id < 254) {
+                if (pending >= 0) {
+                    if (id != pending || loaded[spec.plan.filament_slots[id]] != id)
+                        return "A tool selection would use an unavailable AMS Lite spool.";
+                    current = id; pending = -1; unloaded = false;
+                } else if (id != current) return "An unplanned tool selection was found in the AMS Lite job.";
+            }
+        }
+        if (unloaded && (command == "G0" || command == "G1" || command == "G2" || command == "G3")) {
+            std::istringstream axes(line.substr(0, line.find(';')));
+            while (axes >> parameter) if (parameter.size() > 1 && parameter.front() == 'E') {
+                try { if (std::stod(parameter.substr(1)) > 0.) return "The job would extrude while the AMS filament is unloaded."; }
+                catch (...) { return "Unreadable extrusion in AMS Lite job."; }
+            }
+        }
+    }
+    if (input.bad() || !header || !end || visit_open || pending >= 0 || selects != events.size() ||
+        visits != spec.plan.schedule.stops.size() || pauses != visits)
+        return "The AMS Lite slice is incomplete or its pause count changed. Prepare again.";
+    return {};
 }
 
 }} // namespace Slic3r::ExtendedAMSLite

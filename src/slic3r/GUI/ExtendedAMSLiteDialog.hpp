@@ -1,7 +1,7 @@
 #ifndef slic3r_GUI_ExtendedAMSLiteDialog_hpp_
 #define slic3r_GUI_ExtendedAMSLiteDialog_hpp_
 #include "GUI_Utils.hpp"
-#include "libslic3r/ExtendedAMSLite/Planner.hpp"
+#include "libslic3r/ExtendedAMSLite/Execution.hpp"
 #include <array>
 class wxButton;
 class wxCheckBox;
@@ -15,8 +15,10 @@ namespace GUI {
 class ExtendedAMSLiteDialog : public DPIDialog {
 public:
     ExtendedAMSLiteDialog(wxWindow*, const GCodeProcessorResult&, bool can_reorder,
-                          const std::vector<std::string>& profile_names = {});
+                          const std::vector<std::string>& profile_names = {},
+                          const ExtendedAMSLite::ExecutionSpec* ready = nullptr);
     std::vector<ExtendedAMSLite::LayerOrder> layer_orders() const { return ExtendedAMSLite::complete_layer_orders(m_plan); }
+    ExtendedAMSLite::ExecutionSpec proposal() const;
 protected:
     void on_dpi_changed(const wxRect&) override;
 private:
@@ -32,7 +34,8 @@ private:
     std::vector<int> m_order_ids;
     wxStaticText *m_summary, *m_detail;
     wxChoice* m_visits;
-    wxButton *m_apply, *m_export;
+    wxButton *m_apply, *m_export, *m_prepare;
+    bool m_ready = false;
     bool m_valid = false, m_can_reorder = false;
     void calculate();
     void show_visit();

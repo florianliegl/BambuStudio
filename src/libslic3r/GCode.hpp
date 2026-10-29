@@ -166,6 +166,7 @@ public:
     static const std::vector<std::string>& get() { return Colors; }
 };
 
+namespace ExtendedAMSLite { class ExecutionSession; }
 class GCode {
 public:
     GCode() :
@@ -198,6 +199,7 @@ public:
         m_smooth_coefficient(0.)
         {}
     ~GCode() = default;
+    std::shared_ptr<ExtendedAMSLite::ExecutionSession> m_extended_ams_lite;
 
     // throws std::runtime_exception on error,
     // throws CanceledException through print->throw_if_canceled().

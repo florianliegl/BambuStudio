@@ -11,6 +11,15 @@ previous inactive-slot test passed on A1 firmware 01.08.01.00 with a 0.2 mm nozz
 and LAN-only/Developer Mode. This next attended test checks active unloading
 before one pause, all four spool replacements, and normal loading afterward.
 
+## Physical result
+
+On 2026-10-29 the user confirmed that the corrected v2 test paused during layer 4
+and worked. This is the reported successful active unload, all-four replacement
+in one pause and normal loading/resume test on firmware 01.08.01.00 with the
+installed 0.2 mm nozzle. It is the hardware basis for the native execution hook.
+The full eight-virtual-identity/multiple-visit job remains a separate acceptance
+print. The instructions below describe the original probe for reproducibility.
+
 ## What is different
 
 This experimental project uses the exact `M620 S255` through `M621 S255` unload
@@ -23,9 +32,9 @@ for unloading, then performs one native `M400 U1` pause.
 The end profile's heater shutdown, motor-current changes, timelapse shutdown,
 and final end-of-job parking are excluded. After Resume, the unmodified normal
 A1 filament-change macro loads and purges slot 2. Further normal changes use
-slots 3, 4, and finally 1. Mid-print use of this unload block has **not** yet
-been physically validated. Source reuse and successful slicing do not establish
-firmware recovery behavior.
+slots 3, 4, and finally 1. Mid-print use of this block was confirmed by the user in the v2 probe.
+Source reuse and successful slicing alone do not establish firmware behavior
+on other configurations.
 
 The coupon is **12 x 8 x 1.5 mm**, with five 0.3 mm bands and 0.1 mm layers:
 

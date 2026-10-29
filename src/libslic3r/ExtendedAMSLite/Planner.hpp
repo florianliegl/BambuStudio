@@ -9,7 +9,7 @@
 namespace Slic3r { namespace ExtendedAMSLite {
 
 // IDs are zero based. A virtual filament always retains its profile and color;
-// a slot is only a position in this simulation, never a printer tool number.
+// a slot is a physical feeder position, never a virtual printer tool number.
 struct Filament {
     std::string name;
     std::string material;
@@ -88,7 +88,8 @@ Plan plan(const std::vector<Request>& requests, std::size_t filament_count,
 void verify(const std::vector<Request>& requests, std::size_t filament_count,
             const std::vector<Slot>& slots, const Plan& plan);
 
-// These are hypothetical stops. No supported execution backend exists yet.
+// Planning reports do not activate execution. Execution.hpp provides the
+// separately validated native A1 printing path.
 const char* execution_blocker();
 std::string format_schedule(const std::vector<Filament>& filaments,
                             const std::vector<Request>& requests, const Plan& plan);

@@ -20,15 +20,21 @@
 namespace Slic3r { namespace GUI {
 namespace AMS = ExtendedAMSLite;
 ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProcessorResult& result,
-    bool can_reorder, const std::vector<std::string>& names)
+    bool can_reorder, const std::vector<std::string>& names, const AMS::ExecutionSpec* ready)
     : DPIDialog(parent, wxID_ANY, _L("Extended AMS Lite"), wxDefaultPosition, wxDefaultSize,
-                wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER), m_can_reorder(can_reorder)
+                wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER), m_can_reorder(can_reorder && !ready), m_ready(ready != nullptr)
 {
-    {
+    if (ready) {
+        m_filaments = ready->filaments;
+        m_requests = ready->plan.requests;
+        m_plan = ready->plan;
+    } else {
         std::lock_guard<std::mutex> guard(result.result_mutex);
         if (!result.used_mixed_filaments.empty() || result.extruder_types.size() > 1)
             throw std::invalid_argument("Batch planning supports single-extruder prints without mixed filaments. Select an A1 profile and re-slice.");
         m_requests = AMS::collect_requests(result.moves, EMoveType::Tool_change, EMoveType::Extrude, true);
+        if (!result.filament_change_sequence.empty())
+            m_requests = AMS::normalize_execution_requests(std::move(m_requests), int(result.filament_change_sequence.front()));
         for (std::size_t i = 0; i < result.filaments_count; ++i)
             m_filaments.push_back({i < names.size() ? names[i] : (i < result.settings_ids.filament.size() ? result.settings_ids.filament[i] : "Filament " + std::to_string(i + 1)),
                 i < result.filament_types.size() ? result.filament_types[i] : "Unknown material",
@@ -38,12 +44,14 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     auto* heading = new wxStaticText(this, wxID_ANY, _L("Fewer visits. Swap a whole batch together."));
     heading->SetFont(heading->GetFont().Bold().Larger());
     root->Add(heading, 0, wxALL, em_unit());
-    auto* status = new wxStaticText(this, wxID_ANY, _L("Planning and layer ordering are available. Printing with spool swaps still requires a verified A1 unload / pause / reload procedure."));
+    auto* status = new wxStaticText(this, wxID_ANY, ready ?
+        _L("Print prepared. At each swap pause the active filament is unloaded. Replace the spools shown below, feed each to the AMS inlet, then press Resume on the printer. Keep all eight colors PLA. Choose the visit manually; printer pauses do not identify a visit.") :
+        _L("Prepare an A1 PLA print with one unload-and-swap pause per visit. The normal filament-change and purge commands reload the next color. Print directly from this Studio using LAN-only Developer Mode."));
     status->Wrap(85 * em_unit());
     root->Add(status, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
     m_optimize = new wxCheckBox(this, wxID_ANY, _L("Optimize layers: keep the loaded batch for the next layer"));
-    m_optimize->SetValue(can_reorder);
-    m_optimize->Enable(can_reorder);
+    m_optimize->SetValue(m_can_reorder);
+    m_optimize->Enable(m_can_reorder);
     m_optimize->SetToolTip(_L("Reordering requires an editable project printing by layer. Imported G-code can only be analyzed."));
     root->Add(m_optimize, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
     m_summary = new wxStaticText(this, wxID_ANY, wxEmptyString);
@@ -64,7 +72,7 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     auto* pane = advanced->GetPane();
     auto* settings = new wxBoxSizer(wxVERTICAL);
     m_manual = new wxCheckBox(pane, wxID_ANY, _L("Use my first-layer order (select a color, then move it up or down)"));
-    m_manual->Enable(can_reorder);
+    m_manual->Enable(m_can_reorder);
     settings->Add(m_manual, 0, wxALL, em_unit() / 2);
     auto* order_row = new wxBoxSizer(wxHORIZONTAL);
     m_order = new wxListBox(pane, wxID_ANY, wxDefaultPosition, wxSize(-1, 8 * em_unit()));
@@ -94,6 +102,11 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
         m_initial[s]->SetSelection(0);
         grid->Add(m_initial[s], 1, wxEXPAND);
         m_locked[s] = new wxCheckBox(pane, wxID_ANY, _L("Lock"));
+        if (ready) {
+            m_initial[s]->SetSelection(ready->slots[s].filament + 1);
+            m_locked[s]->SetValue(ready->slots[s].locked);
+            m_initial[s]->Disable(); m_locked[s]->Disable();
+        }
         grid->Add(m_locked[s], 0, wxALIGN_CENTER_VERTICAL);
         m_initial[s]->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { calculate(); });
         m_locked[s]->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { calculate(); });
@@ -104,9 +117,11 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     auto* buttons = new wxBoxSizer(wxHORIZONTAL);
     m_export = new wxButton(this, wxID_ANY, _L("Export plan..."));
     m_apply = new wxButton(this, wxID_APPLY, _L("Apply order && slice"));
+    m_prepare = new wxButton(this, wxID_OK, _L("Prepare print"));
     buttons->Add(m_export, 0);
     buttons->AddStretchSpacer();
     buttons->Add(m_apply, 0, wxRIGHT, em_unit());
+    buttons->Add(m_prepare, 0, wxRIGHT, em_unit());
     buttons->Add(new wxButton(this, wxID_CANCEL, _L("Close")), 0);
     root->Add(buttons, 0, wxEXPAND | wxALL, em_unit());
     SetSizer(root);
@@ -125,6 +140,8 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     m_visits->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { show_visit(); });
     m_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { export_schedule(); });
     m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (m_valid && m_plan.reordered && m_can_reorder) EndModal(wxID_APPLY); });
+    m_prepare->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (m_valid && m_can_reorder) EndModal(wxID_OK); });
+    if (ready) { m_filaments = ready->filaments; m_requests = ready->plan.requests; m_plan = ready->plan; }
     calculate();
 }
 ExtendedAMSLiteDialog::Card ExtendedAMSLiteDialog::make_card(wxSizer* row, const wxString& title)
@@ -166,13 +183,14 @@ void ExtendedAMSLiteDialog::calculate()
     m_valid = false;
     m_export->Disable();
     m_apply->Disable();
+    m_prepare->Disable();
     m_visits->Clear();
     for (auto& card : m_loading) set_card(card, -1, _L("Recalculating..."));
     for (auto& card : m_changes) set_card(card, -1, wxEmptyString);
     try {
         std::vector<AMS::Slot> slots;
         for (std::size_t s = 0; s < 4; ++s) slots.push_back({m_initial[s]->GetSelection() - 1, m_locked[s]->GetValue()});
-        m_plan = AMS::plan_batches(m_requests, m_filaments.size(), slots, m_manual->GetValue() ? m_order_ids : std::vector<int>{}, m_optimize->GetValue());
+        if (!m_ready) m_plan = AMS::plan_batches(m_requests, m_filaments.size(), slots, m_manual->GetValue() ? m_order_ids : std::vector<int>{}, m_optimize->GetValue());
         for (std::size_t s = 0; s < 4; ++s) set_card(m_loading[s], m_plan.schedule.initial_slots[s], filament_label(m_plan.schedule.initial_slots[s]));
         m_summary->SetLabel(wxString::Format(_L("%d visits  /  %d spool replacements  /  %d color changes"), int(m_plan.schedule.stops.size()), int(m_plan.spool_replacements), int(m_plan.color_changes)));
         for (std::size_t i = 0; i < m_plan.schedule.stops.size(); ++i) {
@@ -185,6 +203,9 @@ void ExtendedAMSLiteDialog::calculate()
         m_valid = true;
         m_export->Enable();
         m_apply->Enable(m_plan.reordered && m_can_reorder);
+        m_prepare->Enable(m_can_reorder && !m_plan.schedule.stops.empty() &&
+            std::all_of(m_filaments.begin(), m_filaments.end(), [](const AMS::Filament& f) { return f.material == "PLA"; }));
+        if (m_ready) { m_apply->Hide(); m_prepare->Hide(); }
         show_visit();
     } catch (const std::exception& error) {
         m_summary->SetLabel(wxString::FromUTF8(error.what()));
@@ -203,7 +224,8 @@ void ExtendedAMSLiteDialog::show_visit()
     for (const auto& c : stop.replacements)
         set_card(m_changes[c.slot], c.insert, _L("Remove: ") + filament_label(c.remove) + "\n" + _L("Insert: ") + filament_label(c.insert));
     wxString detail = _L("Next: ") + filament_label(r.filament);
-    detail += m_plan.reordered ? _L("\nProposed order. Apply and re-slice, then reopen this plan to check the actual slice.") : wxString::Format(_L("\nCurrent slice: move %llu, G-code line ID %u. Pauses are not inserted."), static_cast<unsigned long long>(r.move), r.gcode_line);
+    detail += m_ready ? _L("\nOne pause for this visit. Replace only the spools marked Insert. Resume after every replacement is complete.") :
+        _L("\nChoose Prepare print to regenerate this plate with the required unload-and-swap pauses.");
     m_detail->SetLabel(detail);
     m_detail->Wrap(85 * em_unit());
     Layout();
@@ -224,10 +246,19 @@ void ExtendedAMSLiteDialog::export_schedule()
     if (!m_valid) return;
     wxFileDialog dialog(this, _L("Export batch plan"), wxEmptyString, "extended-ams-lite-batches", _L("HTML files (*.html)|*.html|Text files (*.txt)|*.txt"), wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
     if (dialog.ShowModal() != wxID_OK) return;
-    const std::string content = dialog.GetFilterIndex() == 0 ? AMS::format_batch_schedule_html(m_filaments, m_plan) : AMS::format_batch_schedule(m_filaments, m_plan);
+    const std::string content = m_ready ? AMS::format_execution_guide(proposal(), dialog.GetFilterIndex() == 0) :
+        (dialog.GetFilterIndex() == 0 ? AMS::format_batch_schedule_html(m_filaments, m_plan) : AMS::format_batch_schedule(m_filaments, m_plan));
     wxFile file(dialog.GetPath(), wxFile::write);
     if (!file.IsOpened() || !file.Write(wxString::FromUTF8(content), wxConvUTF8) || !file.Close())
         wxMessageBox(_L("Could not write the batch plan."), _L("Export failed"), wxOK | wxICON_ERROR, this);
+}
+AMS::ExecutionSpec ExtendedAMSLiteDialog::proposal() const
+{
+    AMS::ExecutionSpec spec;
+    spec.filaments = m_filaments;
+    spec.plan = m_plan;
+    for (std::size_t s = 0; s < 4; ++s) spec.slots.push_back({m_initial[s]->GetSelection() - 1, m_locked[s]->GetValue()});
+    return spec;
 }
 void ExtendedAMSLiteDialog::on_dpi_changed(const wxRect& suggested_rect)
 {

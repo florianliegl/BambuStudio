@@ -19,6 +19,7 @@ class wxStaticText;
 class wxComboBox;
 class wxComboCtrl;
 class wxCheckBox;
+class wxTimer;
 
 namespace Slic3r {
 
@@ -97,6 +98,13 @@ private:
 
 class Preview : public BaseView
 {
+    struct AMSPreparation;
+    std::shared_ptr<AMSPreparation> m_ams_preparation;
+    std::unique_ptr<wxTimer> m_ams_timer;
+    std::string m_ams_paused_job;
+    void prepare_ams_slice();
+    void check_ams_pause();
+    void set_ams_notes(const std::string& notes);
     DynamicPrintConfig* m_config;
     BackgroundSlicingProcess* m_process;
     GCodeProcessorResult* m_gcode_result;

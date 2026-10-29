@@ -20,8 +20,9 @@ handler offers the official download page; failed launch reports the saved path.
 
 For A1/A1 mini, this action rejects jobs with more than four actually extruding
 virtual identities. Connect supplies authorized submission, not physical batch
-swap execution. Eight-color plans remain proposals pending that backend and
-hardware validation.
+swap execution. Prepared eight-color jobs use native Studio LAN submission with fixed slot
+aliases. They cannot be handed to Connect, which can change those assignments.
+See [README.md](README.md) for the executable workflow and remaining acceptance test.
 
 ## Local verification
 
@@ -55,6 +56,7 @@ unavailable. LAN-only is a printer setting and can be turned off again to return
 to cloud connectivity; reconnect/bind the normal Bambu account if requested.
 Switch modes with no active print. No printer mode was changed during this work.
 
-The user prefers cloud, so Connect is the chosen submission route. Direct local
-submission from this unsigned build has not been tested; Developer Mode's
-existence does not verify the proprietary plugin's local submission path.
+The user enabled LAN-only and Developer Mode, and confirmed native custom Studio
+printing works. Both hardware probes were completed through that local path.
+Connect remains the cloud option for ordinary jobs; prepared Extended AMS Lite
+jobs use native LAN printing to enforce their fixed assignments.

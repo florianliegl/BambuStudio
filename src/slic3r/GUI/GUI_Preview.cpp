@@ -5,9 +5,17 @@
 #include "IMSlider_Utils.hpp"
 #include "GUI_Preview.hpp"
 #include "ExtendedAMSLiteDialog.hpp"
+#include "Tab.hpp"
+#include "DeviceManager.hpp"
+#include "DeviceCore/DevManager.h"
+#include "libslic3r/ExtendedAMSLite/Execution.hpp"
 #include "libslic3r/ExtendedAMSLite/Connect.hpp"
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
 #include <set>
+#include <fstream>
+#include <boost/uuid/random_generator.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include "GUI_App.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
@@ -33,6 +41,8 @@
 #include <wx/checkbox.h>
 #include <wx/button.h>
 #include <wx/msgdlg.h>
+#include <wx/timer.h>
+#include <wx/weakref.h>
 
 // this include must follow the wxWidgets ones or it won't compile on Windows -> see http://trac.wxwidgets.org/ticket/2421
 #include "libslic3r/Print.hpp"
@@ -46,6 +56,12 @@
 
 namespace Slic3r {
 namespace GUI {
+
+struct Preview::AMSPreparation {
+    ExtendedAMSLite::ExecutionSpec spec;
+    int plate = -1;
+    bool encoded = false, scheduled = false;
+};
 
 BaseView::BaseView()
     : wxPanel()
@@ -334,8 +350,13 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
             for (const auto& move : m_gcode_result->moves)
                 if (move.type == EMoveType::Extrude) filaments.insert(move.extruder_id);
             const auto& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+            const auto notes = wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes");
+            if (notes.find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
+                wxMessageBox(_L("Prepared AMS Lite jobs use fixed slot assignments. Use Print plate with your A1 in LAN-only Developer Mode."), _L("Extended AMS Lite"), wxOK | wxICON_INFORMATION, this);
+                return;
+            }
             if (!ExtendedAMSLite::connect_job_supported(printer.opt_string("printer_model"), filaments.size())) {
-                wxMessageBox(_L("Automatic printing with more than four colors on an A1 AMS Lite is not ready. Bambu Connect submits jobs but does not execute spool swaps. Use a standard job with up to four colors for now."),
+                wxMessageBox(_L("For more than four colors on an A1, prepare the print with Extended AMS Lite and use Studio's native LAN printing. Bambu Connect cannot preserve this workflow's slot assignments."),
                     _L("Bambu Connect"), wxOK | wxICON_INFORMATION, this);
                 return;
             }
@@ -369,6 +390,14 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
             }
         });
     }
+    auto* disable_swaps = new wxButton(this, wxID_ANY, _L("Disable spool swaps"));
+    ams_row->Add(disable_swaps, 0, wxALL, 5);
+    disable_swaps->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_ams_preparation.reset();
+        const auto notes = wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes");
+        set_ams_notes(ExtendedAMSLite::notes_with_execution(notes, std::nullopt));
+        wxGetApp().plater()->reslice();
+    });
     main_sizer->Add(ams_row, 0, wxEXPAND);
     swaps->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_gcode_result || m_gcode_result->moves.empty() ||
@@ -381,9 +410,26 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
             auto* plate = plater->get_partplate_list().get_curr_plate();
             const bool can_reorder = !m_only_gcode && wxGetApp().is_editor() &&
                 plate->get_real_print_seq() == PrintSequence::ByLayer;
+            const auto ready = ExtendedAMSLite::execution_from_notes(wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes"));
             ExtendedAMSLiteDialog dialog(this, *m_gcode_result, can_reorder,
-                m_only_gcode ? std::vector<std::string>{} : wxGetApp().preset_bundle->filament_presets);
-            if (dialog.ShowModal() == wxID_APPLY) {
+                m_only_gcode ? std::vector<std::string>{} : wxGetApp().preset_bundle->filament_presets, ready ? &*ready : nullptr);
+            const int action = dialog.ShowModal();
+            if (action == wxID_APPLY || action == wxID_OK) {
+                plater->take_snapshot("Prepare AMS Lite print");
+                if (action == wxID_OK) {
+                    const auto& printer = wxGetApp().preset_bundle->printers.get_edited_preset().config;
+                    if (printer.opt_string("printer_model") != "Bambu Lab A1" && printer.opt_string("printer_model") != "A1")
+                        throw std::runtime_error("Select the Bambu Lab A1 printer profile before preparing this print.");
+                    m_ams_preparation = std::make_shared<AMSPreparation>();
+                    m_ams_preparation->spec = dialog.proposal();
+                    std::string id = boost::uuids::to_string(boost::uuids::random_generator()());
+                    id.erase(std::remove(id.begin(), id.end(), '-'), id.end());
+                    m_ams_preparation->spec.job_id = id.substr(0, 16);
+                    m_ams_preparation->plate = plate->get_index();
+                }
+                auto notes = ExtendedAMSLite::notes_with_execution(wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes"), std::nullopt);
+                if (action == wxID_OK) notes += std::string("\n") + ExtendedAMSLite::execution_preparing_tag;
+                set_ams_notes(notes);
                 // Apply native per-layer sequences, then regenerate travel,
                 // purge and tool changes through the normal slicing pipeline.
                 // Never reorder already generated motion commands.
@@ -398,7 +444,6 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
                         others.back().first.second = int(layer.layer);
                     else others.push_back({{int(layer.layer), int(layer.layer)}, std::move(ids)});
                 }
-                plater->take_snapshot("Optimize AMS Lite layer order");
                 plate->set_first_layer_print_sequence(first);
                 plate->set_other_layers_print_sequence(others);
                 plater->update_project_dirty_from_presets();
@@ -419,11 +464,18 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
 
     bind_event_handlers();
 
+    if (wxGetApp().is_editor()) {
+        m_ams_timer = std::make_unique<wxTimer>(this, wxWindow::NewControlId());
+        Bind(wxEVT_TIMER, [this](wxTimerEvent&) { check_ams_pause(); }, m_ams_timer->GetId());
+        m_ams_timer->Start(2000);
+    }
+
     return true;
 }
 
 Preview::~Preview()
 {
+    if (m_ams_timer) m_ams_timer->Stop();
     unbind_event_handlers();
 
     if (m_canvas != nullptr)
@@ -464,6 +516,101 @@ void Preview::load_print(bool keep_z_range, bool only_gcode)
         load_print_as_fff(keep_z_range, only_gcode);
 
     Layout();
+    prepare_ams_slice();
+}
+
+void Preview::set_ams_notes(const std::string& notes)
+{
+    auto* bundle = wxGetApp().preset_bundle;
+    bundle->prints.get_edited_preset().config.set_key_value("process_notes", new ConfigOptionString(notes));
+    bundle->prints.update_dirty();
+    auto* tab = wxGetApp().get_tab(Preset::TYPE_PRINT);
+    tab->reload_config();
+    auto* plater = wxGetApp().plater();
+    plater->on_config_change(bundle->full_config());
+    plater->update_project_dirty_from_presets();
+    plater->set_plater_dirty(true);
+    plater->update();
+}
+
+void Preview::prepare_ams_slice()
+{
+    auto pending = m_ams_preparation;
+    if (!pending || pending->scheduled || m_only_gcode || !m_gcode_result) return;
+    auto* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    if (!plate || plate->get_index() != pending->plate || !plate->is_slice_result_ready_for_export()) return;
+    pending->scheduled = true;
+    // Run after the preview has finished loading; changing process notes here
+    // invalidates G-code and must not re-enter the preview loader.
+    CallAfter([this, pending] {
+        if (m_ams_preparation != pending) return;
+        try {
+            auto* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+            if (!plate || plate->get_index() != pending->plate || !plate->is_slice_result_ready_for_export()) {
+                pending->scheduled = false; return;
+            }
+            if (!pending->encoded) {
+                auto requests = ExtendedAMSLite::collect_requests(m_gcode_result->moves, EMoveType::Tool_change, EMoveType::Extrude, true);
+                if (m_gcode_result->filament_change_sequence.empty()) throw std::runtime_error("No native filament selections in this slice.");
+                requests = ExtendedAMSLite::normalize_execution_requests(std::move(requests), int(m_gcode_result->filament_change_sequence.front()));
+                pending->spec.plan = ExtendedAMSLite::plan_fixed_batches(requests, pending->spec.slots, pending->spec.plan.filament_slots);
+                ExtendedAMSLite::verify_execution(pending->spec);
+                pending->encoded = true;
+                pending->scheduled = false;
+                set_ams_notes(ExtendedAMSLite::notes_with_execution(wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes"), pending->spec));
+                wxGetApp().plater()->reslice();
+            } else {
+                std::ifstream input(plate->get_slice_result()->filename, std::ios::binary);
+                const auto error = ExtendedAMSLite::execution_gcode_error(input, pending->spec);
+                if (!error.empty()) throw std::runtime_error(error);
+                m_ams_preparation.reset();
+                ExtendedAMSLiteDialog guide(this, *m_gcode_result, false, {}, &pending->spec);
+                guide.ShowModal();
+            }
+        } catch (const std::exception& error) {
+            m_ams_preparation.reset();
+            wxMessageBox(wxString::FromUTF8(error.what()) + "\n\n" + _L("Use Disable spool swaps to return to an ordinary editable slice, then prepare the print again."),
+                _L("AMS Lite preparation failed"), wxOK | wxICON_ERROR, this);
+        }
+    });
+}
+
+void Preview::check_ams_pause()
+{
+    auto* manager = wxGetApp().getDeviceManager();
+    auto* machine = manager ? manager->get_selected_machine() : nullptr;
+    if (!machine || !machine->is_connected() || !machine->is_info_ready()) return;
+    const auto& name = machine->subtask_name;
+    if (machine->print_status != "PAUSE" || name.rfind("EAMS-", 0) != 0 || name.size() < 21) {
+        m_ams_paused_job.clear(); return;
+    }
+    const std::string id = name.substr(5, 16);
+    if (!std::all_of(id.begin(), id.end(), [](unsigned char c) { return std::isxdigit(c) != 0; })) return;
+    const std::string key = machine->get_dev_id() + ":" + id;
+    if (key == m_ams_paused_job) return;
+    try {
+        const auto folder = boost::filesystem::path(data_dir()) / "extended_ams_jobs";
+        boost::filesystem::ifstream target(folder / (id + ".target"), std::ios::binary);
+        std::string serial; target >> serial;
+        if (!target || serial != machine->get_dev_id()) return;
+        boost::filesystem::ifstream input(folder / (id + ".plan"), std::ios::binary);
+        if (!input || boost::filesystem::file_size(folder / (id + ".plan")) > 10000000) return;
+        const auto spec = ExtendedAMSLite::deserialize_execution(std::string(std::istreambuf_iterator<char>(input), {}));
+        if (spec.job_id != id) return;
+        m_ams_paused_job = key;
+        wxWeakRef<Preview> preview(this);
+        wxGetApp().plater()->get_notification_manager()->push_notification(NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::ImportantNotificationLevel,
+            _u8L("Your Extended AMS Lite job reported a pause. Check the printer for errors or a manual pause before replacing spools. Choose the matching visit in the swap guide."),
+            _u8L("Open swap guide"), [preview, spec](wxEvtHandler*) {
+                if (!preview) return false;
+                GCodeProcessorResult empty;
+                ExtendedAMSLiteDialog guide(preview.get(), empty, false, {}, &spec);
+                guide.ShowModal(); return true;
+            });
+    } catch (const std::exception&) {
+        // Missing/invalid local job metadata must never trigger swap instructions.
+    }
 }
 
 //BBS: add only gcode mode

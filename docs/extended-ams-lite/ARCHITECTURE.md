@@ -32,128 +32,78 @@ Relevant pinned primary sources:
 - [DeviceManager.cpp](https://github.com/bambulab/BambuStudio/blob/v02.08.02.61/src/slic3r/GUI/DeviceManager.cpp)
 - [PrintJob.cpp](https://github.com/bambulab/BambuStudio/blob/v02.08.02.61/src/slic3r/GUI/Jobs/PrintJob.cpp)
 
-## Confirmed vs unverified
+## Native execution
 
-**Confirmed in source:** a configured pause path, normal AMS change macros,
-send-time AMS mapping, device-reported paused state, and client pause/resume
-operations exist. The planner can read virtual selection order without changing
-G-code. These facts do not prove spool replacement is executable at any proposed
-position.
+The user reported successful inactive-slot replacement, followed by successful
+active unload/all-four replacement/resume in one pause during layer 4 of the v2
+probe on A1 firmware 01.08.01.00, 0.2 mm nozzle, PLA, LAN-only Developer Mode.
+See [A1-ALL-FOUR-TEST.md](A1-ALL-FOUR-TEST.md) for the exact tested sequence.
+A complete eight-identity, multiple-visit job is the next physical acceptance
+boundary; it is not established by those two tests or software compilation.
 
-**Unverified:** replacing a spool in an occupied AMS Lite slot during a paused
-A1 job; supported unloading and loading while paused; replacing the active spool;
-changing the virtual-to-slot mapping in a running job; whether resumed selections
-use the revised mapping; buffered motion ordering at within-layer pauses; RFIDs
-and slot metadata; expected purge and thermal state; exact pause/resume behavior
-on the user's A1 firmware version. The user reported **01.08.01.00**, an installed
-**0.2 mm nozzle**, and four different PLA spools. The user confirmed active filament needs retraction as during
-a normal change; a repeatable mid-print command sequence was not supplied.
-The [attended one-slot test](A1-01.08.01.00-TEST.md) uses normal changes 1→2→1
-and a native pause while slot 2 is active, so only inactive slot 1 is replaced.
-Its real slicing and project round trip pass locally. On 2026-10-29 the user
-reported successful completion after enabling LAN-only/Developer Mode. Read-only
-local authentication and live status also passed. This confirms the tested
-inactive-slot replacement and resume; it does not establish active-spool
-replacement, within-layer execution, or an all-four batch. A two-stage visit
-could replace inactive spools, use a normal change to unload the remaining
-active spool, then pause again for that last replacement. The user declined
-that approach and requires one pause for all four spools. All eight test colors
-will be PLA. The [experimental all-four probe](A1-ALL-FOUR-TEST.md) instead
-unloads the active filament before one pause at the actual tool-change boundary.
-Its software checks pass; its physical result remains pending.
+The backend uses a fixed virtual-to-slot mapping for the complete job. It does
+not remap the running printer. The user's original brief describes using repeated
+AMS slot assignments manually. Native submission now supplies those aliases from
+the verified plan, using the existing mapping v0/v1/info payloads. Virtual tool
+IDs, filament-specific temperatures and the normal A1 purge path remain intact.
 
-**Unavailable in this implementation:** a batch execution backend, automatic swap pauses,
-tool/mapping rewrite, automatic resume, automatic pause markers, certified material
-compatibility, live swap notifications, and Handy custom messages. No undocumented
-G-code or arbitrary G-code substitution has been introduced.
+Preparation first applies native layer orders and slices. It then replans from
+actual processed selections with the same fixed assignments and regenerates the
+G-code with execution enabled. A scoped `M620 S255` / `T255` / `M621 S255` block
+from the standard A1 end profile unloads the active filament at the normal
+filament-change boundary, followed by one `M400 U1`. The original change macro
+loads and purges after the user resumes. End-of-job heater/motor shutdown is
+excluded. A layer-level pause would be incorrect because prime-tower extrusion
+can still use the old color before the actual tool-change boundary.
 
-In particular, `M400 U1` is evidence for a normal configured pause, not evidence
-for a transactional AMS slot/mapping update. Calling `command_task_resume()`
-would not establish that the right filament is loaded. The planner deliberately
-has no API for sending or resuming a job.
+ExecutionSession checks actual initial/next virtual IDs, layer positions and
+loading states. It rejects missing/unconsumed visits or stale selections. Audit
+markers identify job/selections/visits; pre-export validation also inspects real
+Tn, native unload scope and M400 U1 commands, and rejects positive extrusion while
+unloaded. Header comments containing escaped macro text do not satisfy it.
+Process-note changes already invalidate native G-code export. Existing model
+custom G-code and the old experimental probe macro are rejected in execution mode.
 
-## Notifications
+The bounded tagged specification is persisted through edited print-preset
+metadata, retaining user notes outside the block. A preparation marker blocks
+submission before both passes complete. The disable control removes these tags
+and reslices. Per-plate native sequence settings keep ordering undoable/editable;
+the current implementation prepares one plate at a time. Multi-plate exports
+must each match the active plan and otherwise fail validation.
 
-A future backend can use native `NotificationManager` messages once it can bind
-a known job/plate/schedule and exact stop index to verified printer state. A
-generic `PAUSE` status is insufficient: a manual pause, runout, error, or an
-unrelated job can all require different instructions. Job identity, acknowledged
-stop position, reconnect reconciliation, deduplication, and unknown-state handling
-must be established first. Do not advance a schedule from elapsed time or layer
-number alone: several swaps can occur within the same layer.
+Native LAN submission requires a connected info-ready N2S/A1 with one AMS Lite
+and PLA configured in every slot. It confirms initial physical loading, reapplies
+the fixed aliases at send time and prevents manual alias changes in the dialog.
+Connect and storage-only routes are blocked for prepared jobs because they do not
+enforce these aliases. Ordinary printing remains available after disabling swaps.
+Developer Mode is a printer prerequisite; Studio does not silently change it.
 
-Desktop notifications can mirror a reliably correlated native event later.
-No source-supported custom Bambu Handy message facility was established; none is
-assumed. No cloud service, timer-based notifications or phone integration has
-been added. Resume must remain the user's explicit supported printer action
-after completing a verified load procedure.
+## Notifications and limits
 
-## Changes to existing files
+A saved local plan and target printer ID are bound to the submitted `EAMS-<id>`
+job name, including when MakerWorld metadata provides a different title. The
+Preview timer observes native status rather than elapsed print time. A connected,
+info-ready selected printer reporting that matching job in PAUSE gets a native
+notification with a swap-guide link. Missing files, wrong printer/job, invalid
+metadata or unknown connection state do not produce swap instructions.
 
-- `src/libslic3r/CMakeLists.txt`: register the isolated core module.
-- `src/libslic3r/GCode/GCodeProcessor.hpp`: append retained layer metadata and
-  sliced filament material names; copy material metadata with result assignment.
-- `src/libslic3r/GCode/GCodeProcessor.cpp`: snapshot material metadata on finalize,
-  preserve layer ID before replacing layer-duration placeholder, reset materials,
-  and retain filament colors in the static configuration path.
-- `src/slic3r/CMakeLists.txt`: register the new GUI dialog.
-- `src/slic3r/GUI/GUI_Preview.cpp`: launch batch planning, refusing unsliced or
-  stale current plates; save native sequences with undo and request reslicing.
-- `src/slic3r/GUI/Plater.cpp`: before exporting a model-free sliced job for the
-  named active-unload probe, reject missing unload/pause/load sequences or
-  extrusion while unloaded. Ordinary project saves and backups remain available.
-- `tests/CMakeLists.txt`: register the dependency-free planner tests.
-- `tests/extended_ams_lite/CMakeLists.txt`: register the standalone tests and a
-  separate real-processor integration executable. The upstream aggregate tests
-  have unrelated compile failures on this release.
+PAUSE alone cannot identify an exact visit or exclude a manual/error pause.
+The user selects the visit in the guide and checks printer status. There is no
+automatic visit advancement, automatic resume or unsupported Handy custom-message
+integration. Guides remain available after app restart/reconnect via local
+metadata. Cloud/Handy are unavailable while the printer stays in LAN-only mode.
 
-New core, GUI, tests, workflow, and documentation live in separate files. There
-are no changes to firmware, printer profiles, send jobs, tool ordering, purge,
-G-code generation, or networking code. Applying a layer-order proposal changes
-the project's native sequence settings and regenerates ordinary toolpaths.
-Opening the planner without applying changes does not alter motion or mapping.
+## Verification
 
-The batch planner gives every virtual identity a stable physical slot, groups
-all replacements at one visit, and carries the last bank into the next layer.
-This removes dynamic slot reassignment from this planning model; it does not
-implement a send-time mapping backend. Native sequence records are padded to
-equal widths with unused identities after the required prefix, because Studio's
-serializer otherwise cannot decode layers with different palette sizes.
+Standalone tests exercise exhaustive optimum comparisons and randomized plan
+replay, bounded serialization, current-order replay and real-command audit
+rejection of missing pauses/extrusion while unloaded. Dedicated integration tests
+load real A1 0.2 profiles and exercise native ordering, all eight colors on every
+layer, four generated visits, editable project round trips through GUI preset
+reconciliation, and normal prime-tower edits followed by reslicing. Neither suite
+commands a printer. No screen inspection or UI automation is used.
 
-## Validation and safe first use
-
-1. **Software dry run (available now):** compile and run the standalone tests
-   and demo. Inspect the initial four slots and four grouped demo visits. No printer
-   needs to be connected.
-2. **Application validation (partially complete):** the Windows application and
-   real processor test build. Dedicated tests cover native sequence persistence
-   and actual eight-color model slicing/G-code export (86 assertions). The previous application was used by
-   the user to export a real schedule. The updated application is checked by
-   process/window responsiveness, without screen access as requested. Interactive
-   UI layout and the full Preview button flow still need manual validation.
-   Slice a small eight-color model; compare every
-   planned request with Preview's tool-change order and exported G-code, including
-   purge and startup. Reopen after re-slicing and changing plates. Check unknown
-   material metadata, duplicate assignments, locks, dark mode, DPI, large reports,
-   export cancellation/failure, and scrolling. Verify standard four-color G-code
-   is byte-identical with the planning UI disabled/enabled using the same slice.
-3. **Capability confirmation (pending):** obtain vendor documentation or a
-   supported procedure for the exact A1 firmware to unload/reload a non-active
-   and active AMS Lite slot during pause, map subsequent virtual selections,
-   retain proper thermal/purge state, and confirm readiness. If unavailable,
-   stop execution work and retain this planner as simulation only.
-4. **Controlled hardware check (not authorized by this code):** only after step
-   3 establishes a supported procedure and a reviewed execution backend exists,
-   use a tiny sacrificial two-layer PLA coupon with one swap. Attend the printer,
-   use normal user-confirmed resume, verify the expected physical slot, loaded
-   filament, purge and first resumed extrusion. Then test one within-layer swap.
-   Capture firmware version, settings and observed events; do not infer safety
-   from successful G-code generation or a single completed print.
-5. **Expansion (pending):** repeated same-layer swaps, active-slot replacement,
-   runout, cancel, disconnect/reconnect, unexpected/manual pause, missed events,
-   changed RFID data, and different material profiles require separate checks.
-
-The present safe alternatives are an ordinary supported <=4-filament print, or
-splitting the design into separately printed/color-grouped parts. A layer-only
-external-spool workflow is a separate hardware-dependent project; it is not a
-drop-in solution for arbitrary within-layer eight-color toolpaths.
+Changes are isolated in ExtendedAMSLite core/UI files plus narrow hooks in
+GCode.cpp, Preview, Plater, SelectMachine and PrintJob. Printer profiles, purge
+algorithms and firmware remain upstream. Future profile changes must retain or
+revalidate the tested unload sequence; successful compilation is insufficient.

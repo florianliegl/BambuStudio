@@ -5,6 +5,8 @@
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/FilamentMixer.hpp"
+#include "libslic3r/ExtendedAMSLite/Execution.hpp"
+#include <boost/filesystem/fstream.hpp>
 #include "FilamentBitmapUtils.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -1272,6 +1274,10 @@ void print_ams_mapping_result(std::vector<FilamentInfo>& result)
 bool SelectMachineDialog::do_ams_mapping(MachineObject *obj_,bool use_ams)
 {
     if (!obj_) return false;
+    if (m_print_type == FROM_NORMAL && wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes").find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
+        try { return use_ams && apply_extended_ams_mapping(obj_); }
+        catch (const std::exception&) { m_ams_mapping_result.clear(); return false; }
+    }
     if (!obj_->HasAms()) { use_ams = false;} /*STUDIO-11971*/
     obj_->get_ams_colors(m_cur_colors_in_thumbnail);
     // try color and type mapping
@@ -1407,6 +1413,44 @@ bool SelectMachineDialog::do_ams_mapping(MachineObject *obj_,bool use_ams)
     }
 
     return true;
+}
+
+bool SelectMachineDialog::apply_extended_ams_mapping(MachineObject* obj)
+{
+    const auto& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    const auto notes = config.opt_string("process_notes");
+    if (notes.find(ExtendedAMSLite::execution_preparing_tag) != std::string::npos)
+        throw std::runtime_error("AMS Lite preparation is incomplete. Prepare the plate again before printing.");
+    const auto spec = ExtendedAMSLite::execution_from_notes(notes);
+    if (!spec) return false;
+    if (!obj || !obj->is_connected() || !obj->is_info_ready() || !obj->is_lan_mode_printer() ||
+        obj->get_show_printer_type() != "N2S" || !obj->HasAms())
+        throw std::runtime_error("Select a connected Bambu Lab A1 with AMS Lite in LAN-only Developer Mode.");
+    const auto& units = obj->GetFilaSystem()->GetAmsList();
+    if (units.size() != 1 || units.begin()->second->GetAmsType() != DevAmsType::AMS_LITE)
+        throw std::runtime_error("This plan requires one four-slot AMS Lite.");
+    auto* ams = units.begin()->second;
+    for (int s = 0; s < 4; ++s) {
+        auto* tray = ams->GetTray(std::to_string(s));
+        if (!tray || !tray->is_exists || tray->get_filament_type() != "PLA")
+            throw std::runtime_error("Load and configure PLA in all four AMS Lite slots before printing.");
+    }
+    m_ams_mapping_result = m_filaments;
+    for (auto& item : m_ams_mapping_result) {
+        if (item.id < 0 || std::size_t(item.id) >= spec->plan.filament_slots.size())
+            throw std::runtime_error("The filament list changed. Prepare the AMS Lite print again.");
+        const int slot = spec->plan.filament_slots[item.id];
+        auto* tray = ams->GetTray(std::to_string(slot));
+        if (slot < 0 || slot > 3 || !tray)
+            throw std::runtime_error("A sliced filament has no planned AMS Lite slot. Prepare the print again.");
+        item.tray_id = ams->GetTrayId(slot);
+        item.ams_id = ams->GetAmsId();
+        item.slot_id = std::to_string(slot);
+        item.color = tray->color;
+        item.distance = 0;
+    }
+    sync_ams_mapping_result(m_ams_mapping_result);
+    return DevMappingUtil::is_valid_mapping_result(obj, m_ams_mapping_result, true);
 }
 
 static int s_convert_filament_map_nozzle_id_to_task_nozzle_id(int nozzle_id)
@@ -3166,6 +3210,12 @@ void SelectMachineDialog::Enable_Auto_Refill(bool enable)
 
 void SelectMachineDialog::on_send_print()
 {
+    if (m_print_type == FROM_SDCARD_VIEW && m_required_data_config.has("process_notes") &&
+        m_required_data_config.opt_string("process_notes").find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
+        wxMessageBox(_L("Open the editable AMS Lite project, slice it, and use Print plate. This applies the prepared slot assignments and validates the swap pauses."),
+            _L("Extended AMS Lite"), wxOK | wxICON_INFORMATION, this);
+        return;
+    }
     BOOST_LOG_TRIVIAL(info) << "print_job: on_ok to send";
     m_is_canceled = false;
     Enable_Send_Button(false);
@@ -3188,6 +3238,26 @@ void SelectMachineDialog::on_send_print()
     MachineObject* obj_ = dev->get_selected_machine();
     assert(obj_->get_dev_id() == m_printer_last_select);
     if (obj_ == nullptr) { return; }
+
+    std::optional<ExtendedAMSLite::ExecutionSpec> extended_spec;
+    if (m_print_type == FROM_NORMAL) {
+        try {
+            const auto notes = wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes");
+            if (notes.find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
+                if (!apply_extended_ams_mapping(obj_)) throw std::runtime_error("Could not apply the prepared AMS Lite slot assignments.");
+                extended_spec = ExtendedAMSLite::execution_from_notes(notes);
+                const auto guide = ExtendedAMSLite::format_execution_guide(*extended_spec);
+                if (wxMessageBox(wxString::FromUTF8(guide.substr(0, guide.find("At a swap pause"))) + "\n" +
+                        _L("Are these initial colors loaded in the shown slots? Stay beside the printer for the first complete eight-color test. Slot assignments are fixed for this print."),
+                        _L("Check initial AMS Lite loading"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) {
+                    Enable_Send_Button(true); return;
+                }
+            }
+        } catch (const std::exception& error) {
+            wxMessageBox(wxString::FromUTF8(error.what()), _L("Extended AMS Lite"), wxOK | wxICON_ERROR, this);
+            Enable_Send_Button(true); return;
+        }
+    }
 
     if (!DevMappingUtil::is_valid_mapping_result(obj_, m_ams_mapping_result)) {
         BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << "print_job: invalid mapping";
@@ -3316,6 +3386,21 @@ void SelectMachineDialog::on_send_print()
         }
     }
 
+    if (extended_spec) {
+        m_print_job->set_project_name(ExtendedAMSLite::execution_job_prefix(*extended_spec));
+        try {
+            const auto folder = boost::filesystem::path(data_dir()) / "extended_ams_jobs";
+            boost::filesystem::create_directories(folder);
+            boost::filesystem::ofstream plan(folder / (extended_spec->job_id + ".plan"), std::ios::binary);
+            boost::filesystem::ofstream target(folder / (extended_spec->job_id + ".target"), std::ios::binary);
+            plan << ExtendedAMSLite::serialize_execution(*extended_spec);
+            target << obj_->get_dev_id();
+            plan.close(); target.close();
+            if (!plan || !target) throw std::runtime_error("Could not save the AMS Lite swap guide.");
+        } catch (const std::exception&) {
+            m_status_bar->set_status_text(_L("Could not save the AMS Lite swap guide. Print was not sent.")); return;
+        }
+    }
     m_print_job->task_ams_mapping      = ams_mapping_array;
     m_print_job->task_ams_mapping2     = ams_mapping_array2;
     m_print_job->task_ams_mapping_info = ams_mapping_info;
@@ -4663,6 +4748,11 @@ void SelectMachineDialog::on_material_item_clicked(MaterialItem* item,
                                                    int used_filament_idx,
                                                    wxMouseEvent& e)
 {
+    if (m_print_type == FROM_NORMAL && wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes").find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
+        wxMessageBox(_L("This print uses the fixed slot assignments in its AMS Lite swap guide. Disable spool swaps and prepare again to change them."),
+            _L("Extended AMS Lite"), wxOK | wxICON_INFORMATION, this);
+        return;
+    }
     if (!item->m_enable || !m_check_flag || m_print_status == PrintDialogStatus::PrintStatusUnsupportedPrinter) {
         return;/*STUDIO-11301*/
     }

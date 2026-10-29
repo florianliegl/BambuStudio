@@ -1,6 +1,7 @@
 #include "libslic3r.h"
 #include "I18N.hpp"
 #include "GCode.hpp"
+#include "ExtendedAMSLite/Execution.hpp"
 #include "Exception.hpp"
 #include "ExtrusionEntity.hpp"
 #include "EdgeGrid.hpp"
@@ -1866,6 +1867,10 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
     try {
         m_placeholder_parser_failed_templates.clear();
         this->_do_export(*print, file, thumbnail_cb);
+        if (m_extended_ams_lite) {
+            m_extended_ams_lite->finish();
+            file.writeln("; EAMS_END " + m_extended_ams_lite->spec().job_id);
+        }
         file.flush();
         if (file.is_error()) {
             // Report the real OS error (e.g. "No space left on device", "Permission
@@ -2296,6 +2301,29 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     PROFILE_FUNC();
 
     m_print = &print;
+    m_extended_ams_lite.reset();
+    const auto& ams_full = print.full_print_config();
+    const auto* ams_notes = ams_full.option<ConfigOptionString>("process_notes");
+    if (const auto spec = ExtendedAMSLite::execution_from_notes(ams_notes ? ams_notes->value : "")) {
+        const auto model = ams_full.opt_string("printer_model");
+        const auto* materials = ams_full.option<ConfigOptionStrings>("filament_type");
+        const auto* colors = ams_full.option<ConfigOptionStrings>("filament_colour");
+        const auto* diameters = ams_full.option<ConfigOptionFloats>("nozzle_diameter");
+        if ((model != "Bambu Lab A1" && model != "A1") || !print.is_BBL_Printer() ||
+            print.config().print_sequence != PrintSequence::ByLayer || !diameters || diameters->size() != 1 ||
+            !materials || !colors || materials->size() != spec->filaments.size() || colors->size() != spec->filaments.size())
+            throw Slic3r::RuntimeError("Extended AMS Lite printing requires a single-nozzle A1, PLA colors and printing by layer.");
+        for (std::size_t i = 0; i < spec->filaments.size(); ++i) {
+            if (materials->get_at(i) != spec->filaments[i].material || colors->get_at(i) != spec->filaments[i].color)
+                throw Slic3r::RuntimeError("The filament palette changed. Disable swaps, slice, and prepare the AMS Lite plan again.");
+        }
+        if (print.config().change_filament_gcode.value.find("AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN") != std::string::npos)
+            throw Slic3r::RuntimeError("Select the standard A1 printer profile before preparing Extended AMS Lite printing.");
+        if (!print.model().get_curr_plate_custom_gcodes().gcodes.empty())
+            throw Slic3r::RuntimeError("Remove manual pauses and custom layer G-code before enabling Extended AMS Lite automatic swap pauses.");
+        m_extended_ams_lite = std::make_shared<ExtendedAMSLite::ExecutionSession>(*spec);
+        file.writeln("; EAMS_JOB " + spec->job_id);
+    }
     m_timelapse_pos_picker.init(&print,m_writer.get_xy_offset().cast<coord_t>());
     // init as filament map
     update_layer_related_config(0);
@@ -3860,7 +3888,34 @@ void GCode::process_layers(
 std::string GCode::placeholder_parser_process(const std::string &name, const std::string &templ, unsigned int current_filament_id, const DynamicConfig *config_override)
 {
     try {
-        return m_placeholder_parser.process(templ, current_filament_id, config_override, &m_placeholder_parser_context);
+        std::string prefix;
+        if (m_extended_ams_lite && name == "machine_start_gcode") {
+            prefix = ExtendedAMSLite::execution_selection_marker(m_extended_ams_lite->begin(int(current_filament_id)));
+        }
+        if (m_extended_ams_lite && name == "change_filament_gcode") {
+            if (!config_override) throw std::runtime_error("The AMS Lite tool-change context is unavailable.");
+            const int next = config_override->option<ConfigOptionInt>("next_extruder")->value;
+            if (const auto step = m_extended_ams_lite->change(next, unsigned(m_layer_index + 1))) {
+                if (step->visit) {
+                    const auto& end = m_print->config().machine_end_gcode.value;
+                    const auto begin = end.find("M620 S255\n");
+                    const auto finish = end.find("M621 S255", begin);
+                    if (begin == std::string::npos || finish == std::string::npos)
+                        throw std::runtime_error("The A1 profile has no supported AMS unload block.");
+                    const auto unload = end.substr(begin, finish + std::string("M621 S255").size() - begin);
+                    const std::string tested_unload = "M620 S255\nG1 X267 F15000\nT255\nG1 X-28.5 F18000\n"
+                        "G1 X-48.2 F3000\nG1 X-28.5 F18000\nG1 X-48.2 F3000\nM621 S255";
+                    if (unload != tested_unload)
+                        throw std::runtime_error("The A1 unload block differs from the tested procedure.");
+                    prefix = "; EAMS_VISIT " + std::to_string(*step->visit) + " " + std::to_string(step->request) + "\n";
+                    prefix += m_placeholder_parser.process("M400\nG90\nG1 Z{max_layer_z + 3.0} F1200\n" + unload + "\nM400\n",
+                        current_filament_id, config_override, &m_placeholder_parser_context);
+                    prefix += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\nM400 U1\n";
+                }
+                prefix += ExtendedAMSLite::execution_selection_marker(*step);
+            }
+        }
+        return prefix + m_placeholder_parser.process(templ, current_filament_id, config_override, &m_placeholder_parser_context);
     } catch (std::runtime_error &err) {
         // Collect the names of failed template substitutions for error reporting.
         auto it = m_placeholder_parser_failed_templates.find(name);

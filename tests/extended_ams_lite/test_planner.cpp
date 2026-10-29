@@ -1,6 +1,7 @@
 #include "Planner.hpp"
 #include "Connect.hpp"
 #include "Probe.hpp"
+#include "Execution.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -33,6 +34,63 @@ std::vector<Request> trace(const std::vector<int>& ids, unsigned int layer = 1)
     for (std::size_t i = 0; i < ids.size(); ++i)
         requests.push_back({ids[i], layer, i, static_cast<unsigned int>(i * 10 + 1)});
     return requests;
+}
+
+void execution_cases()
+{
+    std::vector<Request> requests;
+    for (unsigned layer = 1; layer <= 2; ++layer)
+        for (int i = 0; i < 8; ++i)
+            requests.push_back({layer == 1 ? i : 7 - i, layer, requests.size(), 0});
+    ExecutionSpec spec;
+    spec.job_id = "0123456789abcdef";
+    spec.slots.resize(4);
+    for (int i = 0; i < 8; ++i) spec.filaments.push_back({"PLA \"color\" " + std::to_string(i), "PLA", "#2463EB"});
+    spec.plan = plan_batches(requests, 8, spec.slots);
+    check(spec.plan.schedule.stops.size() == 2, "Carried banks need one visit per full eight-color layer");
+    const auto text = serialize_execution(spec);
+    check(serialize_execution(deserialize_execution(text)) == text, "Execution settings round trip exactly");
+    const auto notes = notes_with_execution("User notes", spec);
+    check(execution_from_notes(notes)->job_id == spec.job_id, "Project notes retain the execution plan");
+    check(!execution_from_notes(notes_with_execution(notes, std::nullopt)), "Disabling removes the execution plan");
+    rejects([] { execution_from_notes("[[EXTENDED_AMS_LITE_V1]]broken"); });
+    auto invalid = spec;
+    invalid.filaments[4].material = "PETG";
+    rejects([&] { verify_execution(invalid); });
+    invalid = spec;
+    invalid.plan.filament_slots[4] = 1;
+    rejects([&] { verify_execution(invalid); });
+    ExecutionSession session(spec);
+    std::string gcode = "; EAMS_JOB " + spec.job_id + "\n" + execution_selection_marker(session.begin(0)) + "T0\nG1 E2\n";
+    int previous = 0;
+    for (const auto& r : requests) {
+        const auto step = session.change(r.filament, r.layer);
+        if (!step) continue;
+        if (step->visit)
+            gcode += "; EAMS_VISIT " + std::to_string(*step->visit) + " " + std::to_string(step->request) +
+                "\nM620 S255\nT255\nM621 S255\n; PAUSE_PRINTING\nM400 U1\n";
+        gcode += execution_selection_marker(*step) + "T" + std::to_string(r.filament) + "\nG1 E2\n";
+        previous = r.filament;
+    }
+    (void)previous;
+    session.finish();
+    gcode += "T255\n; EAMS_END " + spec.job_id + "\n";
+    auto error = [&](const std::string& value) { std::istringstream input(value); return execution_gcode_error(input, spec); };
+    check(error(gcode).empty(), "Replay verifies the complete scoped unload/pause/select stream");
+    auto corrupt = gcode;
+    corrupt.erase(corrupt.find("M400 U1\n"), 8);
+    check(!error(corrupt).empty(), "A missing swap pause blocks submission");
+    corrupt = gcode;
+    corrupt.insert(corrupt.find("M400 U1\n"), "G1 E2\n");
+    check(!error(corrupt).empty(), "Extrusion while unloaded blocks submission");
+    check(!error("; process_notes = " + text).empty(), "Plan text in a config header cannot stand in for actual execution");
+    ExecutionSession wrong(spec);
+    wrong.begin(0);
+    rejects([&] { wrong.change(2, 1); });
+    rejects([&] { wrong.change(1, 2); });
+    rejects([&] { wrong.finish(); });
+    auto fixed = plan_fixed_batches(requests, spec.slots, spec.plan.filament_slots);
+    check(fixed.schedule.request_slots == spec.plan.schedule.request_slots, "Final native order retains the chosen physical assignments");
 }
 
 // Exhaustive reference solver explores every legal victim. It shares no
@@ -351,6 +409,7 @@ void exhaustive_and_random()
 int main()
 {
     try {
+        execution_cases();
         const std::string probe = "; AMS_LITE_ACTIVE_UNLOAD_PROBE_BEGIN\nM620 S255\nT255\nM621 S255\nM400 U1\nT1\nG1 E1\n";
         auto probe_error = [](const std::string& text) { std::istringstream input(text); return active_unload_probe_error(input); };
         check(probe_error(probe).empty(), "Accept the expected unload-pause-load sequence");
@@ -379,6 +438,8 @@ int main()
         rejects([] { connect_import_uri("/tmp/a.3mf", std::string("a\0b", 3)); });
         check(connect_job_supported("A1", 2), "Ordinary A1 probe can be handed off");
         check(!connect_job_supported("A1", 8), "Connect does not implement eight-color A1 execution");
+        check(!connect_job_supported("Bambu Lab A1", 8), "Native A1 profile name retains the four-slot Connect boundary");
+        check(!connect_job_supported("Bambu Lab A1 mini", 8), "Native A1 mini profile name retains the four-slot Connect boundary");
         check(!connect_job_supported("A1mini", 5), "A1 mini has the same AMS Lite limit");
         check(!connect_job_supported("A1", 0), "Empty jobs cannot be handed off");
         check(connect_job_supported("X1C", 8), "Other models keep their normal multi-AMS support");

@@ -830,6 +830,11 @@ void SendToPrinterDialog::on_cancel(wxCloseEvent &event)
 
 void SendToPrinterDialog::on_ok(wxCommandEvent &event)
 {
+    if (wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes").find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
+        wxMessageBox(_L("Use Print plate for a prepared AMS Lite job. Native LAN submission applies its fixed slot assignments; uploading to storage alone does not."),
+            _L("Extended AMS Lite"), wxOK | wxICON_INFORMATION, this);
+        return;
+    }
     BOOST_LOG_TRIVIAL(info) << "print_job: on_ok to send !";
     m_is_canceled = false;
     Enable_Send_Button(false);

@@ -36,9 +36,10 @@ inline std::string connect_import_uri(const std::string& absolute_path, const st
 inline bool connect_job_supported(const std::string& printer_model, std::size_t used_filaments)
 {
     // Submission is separate from swap execution. An A1 job with more than
-    // four identities still needs the unimplemented batch execution backend.
+    // four identities needs Studio's fixed mapping and native LAN submission.
     return used_filaments > 0 &&
-        ((printer_model != "A1" && printer_model != "A1mini") || used_filaments <= 4);
+        ((printer_model != "A1" && printer_model != "A1mini" &&
+          printer_model != "Bambu Lab A1" && printer_model != "Bambu Lab A1 mini") || used_filaments <= 4);
 }
 
 } // namespace Slic3r::ExtendedAMSLite
