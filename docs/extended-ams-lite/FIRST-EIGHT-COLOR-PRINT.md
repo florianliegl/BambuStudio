@@ -111,3 +111,12 @@ Repeat a short job with the same mapping style, replacing **all four spools befo
 Resume** and touching nothing afterwards. Success points away from hypotheses 2
 and 3 but does not prove them wrong. A repeat of the failure with all four
 replaced first would remove hypothesis 1.
+
+## Result of the fixed minimal coupon (hardware, 2026-10-30)
+
+After the `M83` change the one-layer, one-spool-swap coupon printed the second color
+correctly (reported by the user). This supports the absolute-extrusion hypothesis for
+the single-swap case. Not yet shown on hardware: replacing all four spools in one
+pause, several visits in one job, eight virtual identities sharing four slots, and
+magnet pauses combined with swaps. The first full job should be attended, at least
+through its first visit.
