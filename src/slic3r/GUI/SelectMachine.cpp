@@ -6,6 +6,9 @@
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/FilamentMixer.hpp"
 #include "libslic3r/ExtendedAMSLite/Execution.hpp"
+#include "libslic3r/ExtendedAMSLite/PauseTimeline.hpp"
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include "ExtendedAMSLiteDialog.hpp"
 #include <boost/filesystem/fstream.hpp>
 #include "FilamentBitmapUtils.hpp"
@@ -3389,12 +3392,36 @@ void SelectMachineDialog::on_send_print()
         try {
             const auto folder = boost::filesystem::path(data_dir()) / "extended_ams_jobs";
             boost::filesystem::create_directories(folder);
+            auto* plate = m_plater->get_partplate_list().get_plate(m_print_plate_idx);
+            const auto* sliced = plate ? plate->get_slice_result() : nullptr;
+            if (!sliced) throw std::runtime_error("Missing sliced pause overview.");
+            std::vector<ExtendedAMSLite::PauseTiming> timings;
+            std::string gcode_path;
+            {
+                std::lock_guard<std::mutex> lock(sliced->result_mutex);
+                gcode_path = sliced->filename;
+                for (const auto& pause : sliced->pause_printing)
+                    timings.push_back({pause.layer_id, pause.remaining_time * 60});
+            }
+            boost::filesystem::ifstream gcode(boost::filesystem::path(gcode_path), std::ios::binary);
+            if (!gcode) throw std::runtime_error("Could not read the sliced pause overview.");
+            const auto overview = ExtendedAMSLite::read_pause_timeline(gcode, *extended_spec, timings);
             boost::filesystem::ofstream plan(folder / (extended_spec->job_id + ".plan"), std::ios::binary);
             boost::filesystem::ofstream target(folder / (extended_spec->job_id + ".target"), std::ios::binary);
+            boost::filesystem::ofstream timeline(folder / (extended_spec->job_id + ".timeline"), std::ios::binary);
             plan << ExtendedAMSLite::serialize_execution(*extended_spec);
             target << obj_->get_dev_id();
-            plan.close(); target.close();
-            if (!plan || !target) throw std::runtime_error("Could not save the AMS Lite swap guide.");
+            timeline << ExtendedAMSLite::serialize_pause_timeline(overview, *extended_spec);
+            plan.close(); target.close(); timeline.close();
+            if (!plan || !target || !timeline) throw std::runtime_error("Could not save the AMS Lite swap guide.");
+            // A separate nonce resets local progress even when the same prepared job is sent again.
+            boost::filesystem::ofstream run(folder / (extended_spec->job_id + ".run"), std::ios::binary);
+            auto nonce = boost::uuids::to_string(boost::uuids::random_generator()());
+            nonce.erase(std::remove(nonce.begin(), nonce.end(), '-'), nonce.end()); nonce.resize(16);
+            run << nonce;
+            run.close();
+            if (!run) throw std::runtime_error("Could not save the AMS Lite print run.");
+            m_print_job->set_project_name(ExtendedAMSLite::execution_job_prefix(*extended_spec) + "_r" + nonce);
         } catch (const std::exception&) {
             m_status_bar->set_status_text(_L("Could not save the AMS Lite swap guide. Print was not sent.")); return;
         }

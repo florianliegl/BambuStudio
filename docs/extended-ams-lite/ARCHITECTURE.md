@@ -95,6 +95,27 @@ metadata. Cloud/Handy are unavailable while the printer stays in LAN-only mode.
 
 ## Verification
 
+`PauseTimeline.hpp` reads the actual EAMS visit / magnet audit markers in command
+order and cross-checks the native processor's pause list for layers and remaining
+time. The sender stores a bounded `.timeline` next to `.plan` / `.target` and a
+new `.run` nonce also included in the submitted job name. The private
+`ExtendedAMSPauseOverview` component on the Device printing page verifies printer,
+job and submission before attaching local `.progress`. Re-sends cannot reuse an
+older run's acknowledgements. The component caches the parsed plan and only checks
+the small run token during status updates.
+
+Acknowledgement requires a connected, info-ready, matching paused job without a
+reported print error and at the planned layer. It increments exactly one local
+event and latches until a matching RUNNING status is observed. Layer/time/generic
+PAUSE never increments progress. Multiple visits within one layer remain separate;
+magnet events retain their exact interleaving. A progress-adjustment dialog lets
+the user select the next uncompleted stop after reconnect or missed confirmation.
+Modal acceptance rechecks current identity/status/progress after the nested event
+loop; it cannot acknowledge a different selected printer or run. The new UI has
+no printer-command calls. Native Resume remains separate. Older sidecars fall
+back to spool visits only, with magnet heights listed separately and no fabricated
+magnet layers or countdowns.
+
 Standalone tests exercise exhaustive optimum comparisons and randomized plan
 replay, bounded serialization, current-order replay and real-command audit
 rejection of missing pauses/extrusion while unloaded. Dedicated integration tests

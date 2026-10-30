@@ -39,10 +39,24 @@ all firmware versions, materials, modified macros or printer models work.
    press Resume on the printer. One visit has one pause. Keep unlisted spools.
    If the active filament is still engaged or an error appears, use the printer's
    normal error controls; do not force the filament.
-7. Keep the guide open and choose the visit manually. A native notification is
+7. On the Device printing page, use **Show what to change** at a pause to see
+   colored slot cards. **Mark this pause completed** advances the local guide;
+   then resume separately on the printer. Use **Adjust progress** if reconnecting
+   to an older print or correcting the selected stop. A native notification is
    shown for the matching submitted job's reported PAUSE state. It cannot identify
    an exact visit or distinguish a swap from an error/manual pause. Studio never
    advances a visit or resumes the printer automatically.
+
+The Device page shows the next unconfirmed stop, its layer, completed/remaining
+counts and an approximate countdown when the slicer's pause timing is available.
+Magnet insertion appears as a separate stop with instructions to keep spools loaded.
+New sends save the ordered stops from actual generated G-code and its processed
+pause timings. A unique submission token prevents progress carrying into a reprint
+of the same project. Confirmed progress survives restarting Studio for that run.
+Earlier submissions have a spool-only overview without invented magnet layers or
+timing; their progress stays local to the session. A generic PAUSE, advancing layer,
+error or disconnect never confirms a stop. The new controls only update the guide;
+they do not transmit printer commands.
 
 Use **Disable spool swaps** to return to an ordinary editable slice or rebuild a
 plan after changing geometry, palette or ordering. Normal process changes such
@@ -137,6 +151,16 @@ build passed **38,328 standalone checks** and **339 real-slicer assertions**.
 It compiled/linked and passed the executable's CLI startup check. Existing Studio
 windows were left running. The next desktop launch uses `build/extended-ams-colors`
 with the existing hotfix settings and saved job guides.
+
+The Device-page pause overview passed **38,361 standalone checks** and **539
+real-slicer assertions in seven cases**. Coverage includes actual pause order and
+timing with/without magnets, same-layer visits, explicit acknowledgements,
+disconnection/errors, saved progress and submission identity. The application
+compiles and links into `build/extended-ams-overview`; the main desktop shortcut
+and repository launcher select it with the existing hotfix data directory.
+This update was deliberately **not launched** because a print was in progress.
+No screen, printer commands or running application were used to verify it.
+Restart from **Extended AMS Lite** only after the current print finishes.
 
 For full Windows builds see [WINDOWS-BUILD.md](WINDOWS-BUILD.md). Upstream compiler
 and CRT warnings remain. Unrelated aggregate OBJ/rotation/raster tests are not

@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 #include "libslic3r/MagnetPockets.hpp"
 #include "libslic3r/ExtendedAMSLite/Execution.hpp"
+#include "libslic3r/ExtendedAMSLite/PauseTimeline.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -174,6 +175,22 @@ TEST_CASE("Real A1 slicing leaves magnet cavities open until one insertion pause
         CHECK(baseline.pause_printing.size() == spec.plan.schedule.stops.size() + 1);
         std::ifstream guarded(files.gcode.string(), std::ios::binary);
         const auto error = AMS::execution_gcode_error(guarded, spec); INFO(error); REQUIRE(error.empty());
+        std::ifstream overview_source(files.gcode.string(), std::ios::binary);
+        std::vector<AMS::PauseTiming> timings;
+        for (const auto& pause : baseline.pause_printing) timings.push_back({pause.layer_id, pause.remaining_time * 60});
+        const auto overview = AMS::read_pause_timeline(overview_source, spec, timings);
+        REQUIRE(overview.events.size() == timings.size());
+        CHECK(overview.complete);
+        std::size_t magnet_count = 0, visit = 0;
+        for (std::size_t i = 0; i < overview.events.size(); ++i) {
+            CHECK(overview.events[i].layer == baseline.pause_printing[i].layer_id);
+            CHECK(overview.events[i].remaining_seconds == baseline.pause_printing[i].remaining_time * 60);
+            if (overview.events[i].kind == AMS::PauseKind::Magnets) {
+                ++magnet_count; CHECK(overview.events[i].layer == 29); CHECK(overview.events[i].z == Approx(2.9));
+            } else CHECK(overview.events[i].visit == visit++);
+        }
+        CHECK(magnet_count == 1); CHECK(visit == spec.plan.schedule.stops.size());
+        CHECK(AMS::deserialize_pause_timeline(AMS::serialize_pause_timeline(overview, spec), spec).events.size() == overview.events.size());
     }
     std::ifstream generated(files.gcode.string(), std::ios::binary);
     const std::string gcode{std::istreambuf_iterator<char>(generated), {}};

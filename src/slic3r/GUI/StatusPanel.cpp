@@ -65,6 +65,7 @@
 
 #include <algorithm>
 #include <functional>
+#include "ExtendedAMSPauseOverview.hpp"
 
 namespace Slic3r { namespace GUI {
 
@@ -1331,6 +1332,7 @@ void PrintingTaskPanel::create_panel(wxWindow *parent)
     sizer->Add(m_panel_printing_title, 0, wxEXPAND | wxALL, 0);
     sizer->Add(0, FromDIP(12), 0);
     sizer->Add(m_printing_sizer, 0, wxEXPAND | wxALL, 0);
+    sizer->Add(new ExtendedAMSPauseOverview(parent), 0, wxEXPAND | wxTOP, FromDIP(8));
     sizer->Add(0, 0, 0, wxTOP, FromDIP(15));
     sizer->Add(m_staticline, 0, wxEXPAND | wxALL, FromDIP(10));
     sizer->Add(m_panel_error_txt, 0, wxEXPAND | wxALL, 0);
@@ -3426,6 +3428,9 @@ bool StatusPanel::is_task_changed(MachineObject *obj)
 
 void StatusPanel::update(MachineObject *obj)
 {
+    if (m_project_task_panel)
+        if (auto* overview = wxWindow::FindWindowByName(pause_overview_name, m_project_task_panel))
+            static_cast<ExtendedAMSPauseOverview*>(overview)->update(obj);
     if (!obj || !obj->is_info_ready()) {
         m_nozzle_btn_panel->Disable();
         return;

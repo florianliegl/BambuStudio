@@ -24,6 +24,10 @@ if exist "%amsRoot%build\extended-ams-colors\BambuStudio.dll" (
     set "amsApp=%amsRoot%build\extended-ams-colors\bambu-studio.exe"
     set "amsData=%amsRoot%build\extended-ams-hotfix-userdata"
 )
+if exist "%amsRoot%build\extended-ams-overview\BambuStudio.dll" (
+    set "amsApp=%amsRoot%build\extended-ams-overview\bambu-studio.exe"
+    set "amsData=%amsRoot%build\extended-ams-hotfix-userdata"
+)
 if not exist "%amsApp%" (
     echo The custom Bambu Studio application has not been built yet.
     echo See docs\extended-ams-lite\README.md for build instructions.

@@ -2,6 +2,7 @@
 #include "libslic3r/ExtendedAMSLite/Planner.hpp"
 #include "libslic3r/ExtendedAMSLite/Probe.hpp"
 #include "libslic3r/ExtendedAMSLite/Execution.hpp"
+#include "libslic3r/ExtendedAMSLite/PauseTimeline.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/GCode/ToolOrdering.hpp"
 #include "libslic3r/ParameterUtils.hpp"
@@ -293,6 +294,18 @@ TEST_CASE("A1 eight-color execution preserves normal macros and inserts batch pa
     INFO(error);
     REQUIRE(error.empty());
     generated.close();
+    std::ifstream overview_source(files.execution.string(), std::ios::binary);
+    std::vector<AMS::PauseTiming> timings;
+    for (const auto& pause : ready.pause_printing) timings.push_back({pause.layer_id, pause.remaining_time * 60});
+    const auto overview = AMS::read_pause_timeline(overview_source, spec, timings);
+    overview_source.close(); // Later checks re-export this same path on Windows.
+    REQUIRE(overview.events.size() == 4);
+    CHECK(overview.complete);
+    for (std::size_t i = 0; i < overview.events.size(); ++i) {
+        CHECK(overview.events[i].kind == AMS::PauseKind::SpoolSwap);
+        CHECK(overview.events[i].visit == i);
+        CHECK(overview.events[i].layer == i + 1);
+    }
     for (std::size_t i = 0; i < ready.pause_printing.size(); ++i)
         REQUIRE(ready.pause_printing[i].layer_id == spec.plan.requests[spec.plan.schedule.stops[i].before_request].layer);
     std::map<unsigned, std::set<int>> extruded;

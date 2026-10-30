@@ -2,6 +2,7 @@
 #include "Connect.hpp"
 #include "Probe.hpp"
 #include "Execution.hpp"
+#include "PauseTimeline.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -79,6 +80,56 @@ void execution_cases()
     gcode += "T255\n; EAMS_END " + spec.job_id + "\n";
     auto error = [&](const std::string& value) { std::istringstream input(value); return execution_gcode_error(input, spec); };
     check(error(gcode).empty(), "Replay verifies the complete scoped unload/pause/select stream");
+    std::istringstream source(gcode);
+    auto timeline = read_pause_timeline(source, spec, {{1, 300}, {2, 120}});
+    check(timeline.events.size() == 2 && timeline.events[1].visit == 1, "Overview preserves swap visit identity and actual order");
+    const auto timeline_text = serialize_pause_timeline(timeline, spec);
+    check(serialize_pause_timeline(deserialize_pause_timeline(timeline_text, spec), spec) == timeline_text, "Pause overview round trips");
+    PauseObservation state{"printer-a", execution_job_prefix(spec) + "_rsubmission-1_plate_1", "RUNNING", true, true, 1, 0, 360};
+    PauseProgress progress{"submission-1", 0, false};
+    check(matches_pause_job(spec, "printer-a", state), "Overview matches exact job and target printer");
+    check(!matches_pause_job(spec, "printer-b", state), "Different printer never uses a saved guide");
+    check(pause_job_id("other-" + spec.job_id).empty() && pause_job_id(execution_job_prefix(spec) + "f").empty(), "Job prefixes reject partial matches");
+    check(estimated_seconds_to_pause(timeline.events[0], state) == 60, "ETA uses actual pause remaining time");
+    check(!observe_pause_progress(progress, spec, "printer-a", state) && progress.completed == 0, "RUNNING never advances a visit");
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "Cannot mark a running print's pause complete");
+    state.status = "PAUSE";
+    check(estimated_seconds_to_pause(timeline.events[0], state) == -1, "No countdown while paused");
+    state.error = 123;
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "Printer errors cannot complete a planned stop");
+    state.error = 0; state.layer = 2;
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "Wrong layer requires explicit progress adjustment");
+    state.layer = 1; state.connected = false;
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "Disconnected status cannot acknowledge a pause");
+    state.connected = true; state.ready = false;
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "Stale not-ready state cannot acknowledge a pause");
+    state.ready = true;
+    check(complete_pause(progress, timeline, spec, "printer-a", state) && progress.completed == 1 && progress.awaiting_resume, "Explicit confirmation advances exactly one pause");
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "Repeated clicks at the same pause cannot advance twice");
+    const auto checkpoint = serialize_pause_progress(progress, timeline.events.size());
+    const auto restored = deserialize_pause_progress(checkpoint, "submission-1", timeline.events.size());
+    check(restored.completed == 1 && restored.awaiting_resume, "Restart preserves the acknowledgement latch");
+    rejects([&] { deserialize_pause_progress(checkpoint, "submission-2", timeline.events.size()); });
+    rejects([&] { deserialize_pause_progress(checkpoint, "submission-1", 0); });
+    state.status = "RUNNING"; state.job_name = "Other print";
+    check(!observe_pause_progress(progress, spec, "printer-a", state) && progress.awaiting_resume, "Wrong job cannot clear the pause latch");
+    state.job_name = execution_job_prefix(spec) + "_rsubmission-2";
+    check(!observe_pause_progress(progress, spec, "printer-a", state) && progress.awaiting_resume, "Another run of the same project cannot clear the pause latch");
+    state.job_name = execution_job_prefix(spec) + "_rsubmission-1";
+    check(observe_pause_progress(progress, spec, "printer-a", state) && !progress.awaiting_resume && progress.completed == 1, "Resume clears only the latch, not the next visit");
+    state.layer = 2; state.status = "PAUSE";
+    check(complete_pause(progress, timeline, spec, "printer-a", state), "Second planned pause can be acknowledged independently");
+    state.status = "RUNNING"; observe_pause_progress(progress, spec, "printer-a", state); state.status = "PAUSE";
+    check(!complete_pause(progress, timeline, spec, "printer-a", state), "No acknowledgement beyond end of schedule");
+    rejects([&] { deserialize_pause_timeline(timeline_text + "junk", spec); });
+    auto bad_timeline = timeline; bad_timeline.events[0].visit = 1;
+    rejects([&] { serialize_pause_timeline(bad_timeline, spec); });
+    std::istringstream extra_pause(gcode + "M400 U1\n");
+    rejects([&] { read_pause_timeline(extra_pause, spec); });
+    std::istringstream missing_timing(gcode);
+    rejects([&] { read_pause_timeline(missing_timing, spec, {{1, 1}}); });
+    std::istringstream wrong_layer(gcode);
+    rejects([&] { read_pause_timeline(wrong_layer, spec, {{2, 300}, {2, 120}}); });
     auto corrupt = gcode;
     corrupt.erase(corrupt.find("M400 U1\n"), 8);
     check(!error(corrupt).empty(), "A missing swap pause blocks submission");
@@ -98,6 +149,23 @@ void execution_cases()
     auto with_magnet = gcode;
     with_magnet.insert(with_magnet.find("G1 E2\n") + 6, "; MAGNET_INSERT_BEGIN 2.900000\n; PAUSE_PRINTING\nM400 U1\n; MAGNET_INSERT_END\n");
     check(error(with_magnet).empty(), "A planned magnet insertion keeps the current spool loaded");
+    std::istringstream magnet_source(with_magnet);
+    const auto with_magnets = read_pause_timeline(magnet_source, spec, {{1, 400}, {1, 300}, {2, 120}});
+    check(with_magnets.events.size() == 3 && with_magnets.events[0].kind == PauseKind::Magnets &&
+          with_magnets.events[1].visit == 0, "Magnet pauses retain their position without shifting swap visit identity");
+    check(deserialize_pause_timeline(serialize_pause_timeline(with_magnets, spec), spec).events[0].layer == 1,
+          "Magnet layer derives from actual generated processor output");
+    check(!legacy_pause_timeline(spec).complete && legacy_pause_timeline(spec).events.size() == 2,
+          "Legacy guides never invent magnet layers or include magnets in spool visit numbering");
+    auto same_layer_spec = spec;
+    for (auto& r : same_layer_spec.plan.requests) r.layer = 1;
+    // Only event grouping changes here; execution mapping and chronological requests are unchanged.
+    auto same_layer_timeline = with_magnets; same_layer_timeline.events[2].layer = 1;
+    verify_pause_timeline(same_layer_timeline, same_layer_spec);
+    PauseProgress same_layer_progress{"submission-1", 1, false};
+    state.layer = 1;
+    check(complete_pause(same_layer_progress, same_layer_timeline, same_layer_spec, "printer-a", state), "Multiple visits in one layer remain individually confirmable");
+    check(!complete_pause(same_layer_progress, same_layer_timeline, same_layer_spec, "printer-a", state), "Same-layer visits still require a resume between confirmations");
     check(!error(gcode).empty(), "Removing a planned magnet insertion blocks submission");
 }
 
