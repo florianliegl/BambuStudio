@@ -15,6 +15,7 @@
 #include <boost/filesystem.hpp>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <set>
 
@@ -681,5 +682,387 @@ TEST_CASE("A1 attended replacement probes preserve native tool-change recovery",
         REQUIRE_FALSE(fs::exists(sliced_output));
         fs::copy_file(files.project, output);
         fs::copy_file(files.sliced, sliced_output);
+    }
+}
+
+// A deliberately tiny hardware coupon: one 0.1 mm layer in four colors, one
+// executable spool-swap visit that replaces all four spools, then one more 0.1 mm
+// layer in four other colors. It uses the same eight virtual identities, fixed
+// slot aliases, native unload block and normal A1 change macro as a full job.
+TEST_CASE("A1 quick one-swap coupon uses the native eight-identity execution path", "[ExtendedAMSLite][Execution][HardwareProbe]")
+{
+    namespace fs = boost::filesystem;
+    const auto resources = fs::path(TEST_DATA_DIR).parent_path().parent_path() / "resources";
+    set_resources_dir(resources.string());
+    PresetBundle presets;
+    presets.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    REQUIRE(presets.printers.select_preset_by_name("Bambu Lab A1 0.2 nozzle", true, true));
+    REQUIRE(presets.prints.select_preset_by_name("0.10mm Standard @BBL A1 0.2 nozzle", true, true));
+    REQUIRE(presets.filaments.select_preset_by_name("Generic PLA @BBL A1 0.2 nozzle", true, true));
+    presets.filament_presets.assign(8, "Generic PLA @BBL A1 0.2 nozzle");
+    presets.set_num_filaments(8);
+    const std::vector<std::string> colors{"#F5F5F5", "#2463EB", "#202020", "#E34B4B", "#22A86A", "#F2C438", "#9755CE", "#ED8736"};
+    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings(colors));
+    auto config = presets.full_config();
+    config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPEI));
+    config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(0.1));
+    config.set_key_value("layer_height", new ConfigOptionFloat(0.1));
+    // Keep the normal purge for the colors loaded at the swap; shorten the purges
+    // between colors within one group so the coupon finishes quickly.
+    std::vector<double> flush(64, 160.);
+    for (int i = 0; i < 8; ++i)
+        for (int j = 0; j < 8; ++j)
+            if (i == j) flush[i * 8 + j] = 0.;
+            else if (i / 4 == j / 4) flush[i * 8 + j] = 50.;
+    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(flush));
+    // Layer 1 prints identities 0-3, layer 2 prints identities 4-7.
+    std::vector<AMS::Request> nominal;
+    for (unsigned layer = 1; layer <= 2; ++layer)
+        for (int id = 0; id < 4; ++id) nominal.push_back({int(layer - 1) * 4 + id, layer, nominal.size(), 0});
+    const auto proposal = AMS::plan_batches(nominal, 8, std::vector<AMS::Slot>(4), {0, 1, 2, 3, 4, 5, 6, 7}, true);
+    std::vector<LayerPrintSequence> other;
+    for (const auto& layer : AMS::complete_layer_orders(proposal)) {
+        std::vector<int> ids;
+        for (int id : layer.filaments) ids.push_back(id + 1);
+        if (layer.layer == 1) config.set_key_value("first_layer_print_sequence", new ConfigOptionInts(ids));
+        else other.push_back({{int(layer.layer), int(layer.layer)}, ids});
+    }
+    int count = 0;
+    std::vector<int> serialized;
+    get_other_layers_print_sequence(other, count, serialized);
+    config.set_key_value("other_layers_print_sequence_nums", new ConfigOptionInt(count));
+    config.set_key_value("other_layers_print_sequence", new ConfigOptionInts(serialized));
+    Model model;
+    auto* object = model.add_object();
+    object->name = "Quick one-swap coupon";
+    for (int id = 0; id < 8; ++id) {
+        auto mesh = make_cube(6, 6, 0.1);
+        mesh.translate(110.f + float(id % 4) * 8.f, 124.f, id < 4 ? 0.f : 0.1f);
+        auto* volume = object->add_volume(std::move(mesh));
+        volume->config.set("extruder", id + 1);
+    }
+    object->add_instance();
+    object->ensure_on_bed();
+    Print print;
+    print.set_status_silent(); print.set_BBL_Printer(true); print.set_plate_index(0); print.set_plate_origin(Vec3d::Zero());
+    print.set_extruder_filament_info(presets.get_extruder_filament_info());
+    print.apply(model, config);
+    const auto validation = print.validate();
+    INFO(validation.string);
+    REQUIRE(validation.string.empty());
+    print.process();
+    struct Files {
+        fs::path plain = fs::temp_directory_path() / fs::unique_path("ams-quick-%%%%-%%%%.gcode");
+        fs::path execution = fs::temp_directory_path() / fs::unique_path("ams-quick-ready-%%%%-%%%%.gcode");
+        ~Files() { boost::system::error_code ignored; fs::remove(plain, ignored); fs::remove(execution, ignored); }
+    } files;
+    GCodeProcessorResult baseline;
+    print.export_gcode(files.plain.string(), &baseline, nullptr);
+    REQUIRE(baseline.pause_printing.empty());
+    REQUIRE_FALSE(baseline.filament_change_sequence.empty());
+    auto requests = AMS::normalize_execution_requests(
+        AMS::collect_requests(baseline.moves, EMoveType::Tool_change, EMoveType::Extrude, true), baseline.filament_change_sequence.front());
+    {
+        std::string sequence;
+        for (const auto& request : requests) sequence += std::to_string(request.filament) + "@" + std::to_string(request.layer) + " ";
+        INFO("normalized requests: " << sequence);
+        // Initial selection, eight colors, plus the prime tower's carry-over of the
+        // last layer-1 color at the start of layer 2.
+        CHECK(requests.size() == 10);
+    }
+    AMS::ExecutionSpec spec;
+    spec.job_id = "a100010000000002";
+    spec.slots.resize(4);
+    for (int i = 0; i < 8; ++i) spec.filaments.push_back({"PLA " + std::to_string(i + 1), "PLA", colors[i]});
+    spec.plan = AMS::plan_fixed_batches(requests, spec.slots, proposal.filament_slots);
+    REQUIRE(spec.plan.schedule.stops.size() == 1);
+    REQUIRE(spec.plan.schedule.stops.front().replacements.size() == 4);
+    config.set_key_value("process_notes", new ConfigOptionString(AMS::notes_with_execution("", spec)));
+    print.apply(model, config);
+    print.process();
+    GCodeProcessorResult ready;
+    print.export_gcode(files.execution.string(), &ready, nullptr);
+    REQUIRE(ready.pause_printing.size() == 1);
+    REQUIRE(ready.pause_printing.front().layer_id == 2);
+    {
+        std::ifstream generated(files.execution.string(), std::ios::binary);
+        const auto error = AMS::execution_gcode_error(generated, spec);
+        INFO(error);
+        REQUIRE(error.empty());
+    }
+    std::map<unsigned, std::set<int>> extruded;
+    for (const auto& move : ready.moves) if (move.type == EMoveType::Extrude && move.layer_id > 0)
+        extruded[move.layer_id].insert(move.extruder_id);
+    REQUIRE(extruded.size() == 2);
+    CHECK(extruded[1] == std::set<int>({0, 1, 2, 3}));
+    CHECK(extruded[2] == std::set<int>({3, 4, 5, 6, 7})); // 3 is the tower carry-over before the swap
+    // After the pause the next extrusion must come from a newly loaded identity.
+    const auto pause = std::find_if(ready.moves.begin(), ready.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
+    REQUIRE(pause != ready.moves.end());
+    const auto after = std::find_if(pause + 1, ready.moves.end(), [](const auto& move) { return move.type == EMoveType::Extrude; });
+    REQUIRE(after != ready.moves.end());
+    CHECK(after->extruder_id >= 4);
+
+    // Match the GUI's edited-process metadata so the schedule survives project import.
+    auto& process = presets.prints.get_edited_preset().config;
+    for (const auto& key : config.keys())
+        if (process.has(key)) process.set_key_value(key, config.option(key)->clone());
+    presets.prints.update_dirty();
+    const auto native_export = presets.full_config();
+    config.set_key_value("different_settings_to_system", native_export.option("different_settings_to_system")->clone());
+    PlateData plate;
+    plate.plate_index = 0; plate.objects_and_instances.emplace_back(0, 0);
+    plate.plate_name = "Quick test - one layer, swap all four, one layer";
+    for (const auto* key : {"first_layer_print_sequence", "other_layers_print_sequence_nums", "other_layers_print_sequence"})
+        plate.config.set_key_value(key, config.option(key)->clone());
+    const auto project = files.plain.string() + ".3mf";
+    const auto sliced = files.execution.string() + ".3mf";
+    struct Archives {
+        std::vector<std::string> paths;
+        ~Archives() { for (const auto& path : paths) { boost::system::error_code ignored; fs::remove(path, ignored); } }
+    } archives{{project, sliced}};
+    StoreParams params;
+    params.path = project.c_str(); params.model = &model; params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    REQUIRE(store_bbs_3mf(params));
+    Model loaded_model;
+    DynamicPrintConfig loaded_config;
+    ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
+    PlateDataPtrs plates;
+    std::vector<Preset*> embedded;
+    bool is_bambu = false;
+    Semver version;
+    REQUIRE(load_bbs_3mf(project.c_str(), &loaded_config, &substitutions, &loaded_model, &plates,
+        &embedded, &is_bambu, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::Silence));
+    PresetBundle restored;
+    restored.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    if (!embedded.empty()) restored.load_project_embedded_presets(embedded, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    Preset::normalize(loaded_config);
+    restored.load_config_model(project, std::move(loaded_config), version);
+    auto imported = restored.full_config();
+    REQUIRE(AMS::serialize_execution(*AMS::execution_from_notes(imported.opt_string("process_notes"))) == AMS::serialize_execution(spec));
+    REQUIRE(loaded_model.objects.size() == 1);
+    REQUIRE(loaded_model.objects.front()->volumes.size() == 8);
+    REQUIRE(plates.size() == 1);
+    imported.apply(plates.front()->config);
+    Print reopened;
+    reopened.set_status_silent(); reopened.set_BBL_Printer(true); reopened.set_plate_index(0); reopened.set_plate_origin(Vec3d::Zero());
+    reopened.set_extruder_filament_info(restored.get_extruder_filament_info());
+    reopened.apply(loaded_model, imported); reopened.process();
+    GCodeProcessorResult repeated;
+    reopened.export_gcode(files.execution.string(), &repeated, nullptr);
+    REQUIRE(repeated.pause_printing.size() == 1);
+    {
+        std::ifstream reloaded(files.execution.string(), std::ios::binary);
+        REQUIRE(AMS::execution_gcode_error(reloaded, spec).empty());
+    }
+    plate.gcode_file = files.execution.string(); plate.is_sliced_valid = true;
+    plate.printer_model_id = "A1"; plate.nozzle_diameters = "0.2";
+    plate.pause_printing = repeated.pause_printing; plate.parse_filament_info(&repeated);
+    for (auto& filament : plate.slice_filaments_info) {
+        std::string display_type;
+        filament.type = config.get_filament_type(display_type, filament.id);
+        filament.color = colors[filament.id];
+        filament.filament_id = config.option<ConfigOptionStrings>("filament_ids")->get_at(filament.id);
+    }
+    REQUIRE(plate.slice_filaments_info.size() == 8);
+    params.path = sliced.c_str();
+    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel;
+    REQUIRE(store_bbs_3mf(params));
+    release_PlateData_list(plates);
+    for (auto* preset : embedded) delete preset;
+    if (const char* destination = std::getenv("EXTENDED_AMS_QUICK_OUTPUT")) {
+        const auto folder = fs::absolute(destination);
+        fs::create_directories(folder);
+        const auto output = folder / "A1 quick spool-swap test.3mf";
+        const auto fixed_output = folder / "A1 quick spool-swap test.gcode.3mf";
+        REQUIRE_FALSE(fs::exists(output)); REQUIRE_FALSE(fs::exists(fixed_output));
+        fs::copy_file(project, output); fs::copy_file(sliced, fixed_output);
+        std::ofstream guide((folder / "SWAP GUIDE.html").string(), std::ios::binary);
+        guide << AMS::format_execution_guide(spec, true);
+        REQUIRE(bool(guide));
+    }
+}
+
+// The smallest swap coupon: one 0.1 mm layer with two chips. Color 1 and color 2
+// are forced onto the same physical slot, so the job prints color 1, unloads,
+// pauses once for a single spool replacement, then prints color 2 on that layer.
+TEST_CASE("A1 minimal coupon swaps one spool inside a single layer", "[ExtendedAMSLite][Execution][HardwareProbe]")
+{
+    namespace fs = boost::filesystem;
+    const auto resources = fs::path(TEST_DATA_DIR).parent_path().parent_path() / "resources";
+    set_resources_dir(resources.string());
+    PresetBundle presets;
+    presets.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    REQUIRE(presets.printers.select_preset_by_name("Bambu Lab A1 0.2 nozzle", true, true));
+    REQUIRE(presets.prints.select_preset_by_name("0.10mm Standard @BBL A1 0.2 nozzle", true, true));
+    REQUIRE(presets.filaments.select_preset_by_name("Generic PLA @BBL A1 0.2 nozzle", true, true));
+    presets.filament_presets.assign(2, "Generic PLA @BBL A1 0.2 nozzle");
+    presets.set_num_filaments(2);
+    const std::vector<std::string> colors{"#F5F5F5", "#22A86A"};
+    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings(colors));
+    auto config = presets.full_config();
+    config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPEI));
+    config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(0.1));
+    config.set_key_value("layer_height", new ConfigOptionFloat(0.1));
+    // The failed eight-color job used 280 for every pair; keep that purge amount.
+    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(std::vector<double>{0., 280., 280., 0.}));
+    config.set_key_value("first_layer_print_sequence", new ConfigOptionInts(std::vector<int>{1, 2}));
+    config.set_key_value("other_layers_print_sequence_nums", new ConfigOptionInt(0));
+    config.set_key_value("other_layers_print_sequence", new ConfigOptionInts(std::vector<int>{}));
+    Model model;
+    auto* object = model.add_object();
+    object->name = "Minimal one-swap coupon";
+    for (int id = 0; id < 2; ++id) {
+        auto mesh = make_cube(8, 8, 0.1);
+        mesh.translate(112.f + float(id) * 12.f, 124.f, 0.f);
+        auto* volume = object->add_volume(std::move(mesh));
+        volume->config.set("extruder", id + 1);
+    }
+    object->add_instance();
+    object->ensure_on_bed();
+    Print print;
+    print.set_status_silent(); print.set_BBL_Printer(true); print.set_plate_index(0); print.set_plate_origin(Vec3d::Zero());
+    print.set_extruder_filament_info(presets.get_extruder_filament_info());
+    print.apply(model, config);
+    const auto validation = print.validate();
+    INFO(validation.string);
+    REQUIRE(validation.string.empty());
+    print.process();
+    struct Files {
+        fs::path plain = fs::temp_directory_path() / fs::unique_path("ams-minimal-%%%%-%%%%.gcode");
+        fs::path execution = fs::temp_directory_path() / fs::unique_path("ams-minimal-ready-%%%%-%%%%.gcode");
+        ~Files() { boost::system::error_code ignored; fs::remove(plain, ignored); fs::remove(execution, ignored); }
+    } files;
+    GCodeProcessorResult baseline;
+    print.export_gcode(files.plain.string(), &baseline, nullptr);
+    REQUIRE(baseline.pause_printing.empty());
+    REQUIRE_FALSE(baseline.filament_change_sequence.empty());
+    auto requests = AMS::normalize_execution_requests(
+        AMS::collect_requests(baseline.moves, EMoveType::Tool_change, EMoveType::Extrude, true), baseline.filament_change_sequence.front());
+    {
+        std::string sequence;
+        for (const auto& request : requests) sequence += std::to_string(request.filament) + "@" + std::to_string(request.layer) + " ";
+        INFO("normalized requests: " << sequence);
+        REQUIRE(requests.size() >= 2);
+        CHECK(requests.front().filament == 0);
+        CHECK(requests.back().filament == 1);
+    }
+    AMS::ExecutionSpec spec;
+    spec.job_id = "a100010000000003";
+    spec.slots.resize(4);
+    for (int i = 0; i < 2; ++i) spec.filaments.push_back({"PLA " + std::to_string(i + 1), "PLA", colors[i]});
+    // Both identities share physical slot 1: that forces exactly one replacement.
+    spec.plan = AMS::plan_fixed_batches(requests, spec.slots, std::vector<int>{0, 0});
+    REQUIRE(spec.plan.schedule.stops.size() == 1);
+    REQUIRE(spec.plan.schedule.stops.front().replacements.size() == 1);
+    config.set_key_value("process_notes", new ConfigOptionString(AMS::notes_with_execution("", spec)));
+    print.apply(model, config);
+    print.process();
+    GCodeProcessorResult ready;
+    print.export_gcode(files.execution.string(), &ready, nullptr);
+    REQUIRE(ready.pause_printing.size() == 1);
+    REQUIRE(ready.pause_printing.front().layer_id == 1);
+    {
+        std::ifstream generated(files.execution.string(), std::ios::binary);
+        const auto error = AMS::execution_gcode_error(generated, spec);
+        INFO(error);
+        REQUIRE(error.empty());
+    }
+    std::map<unsigned, std::set<int>> extruded;
+    for (const auto& move : ready.moves) if (move.type == EMoveType::Extrude && move.layer_id > 0)
+        extruded[move.layer_id].insert(move.extruder_id);
+    REQUIRE(extruded.size() == 1);
+    CHECK(extruded[1] == std::set<int>({0, 1}));
+    const auto pause = std::find_if(ready.moves.begin(), ready.moves.end(), [](const auto& move) { return move.type == EMoveType::Pause_Print; });
+    REQUIRE(pause != ready.moves.end());
+    const auto after = std::find_if(pause + 1, ready.moves.end(), [](const auto& move) { return move.type == EMoveType::Extrude; });
+    REQUIRE(after != ready.moves.end());
+    CHECK(after->extruder_id == 1);
+
+    // Match the GUI's edited-process metadata so the schedule survives project import.
+    auto& process = presets.prints.get_edited_preset().config;
+    for (const auto& key : config.keys())
+        if (process.has(key)) process.set_key_value(key, config.option(key)->clone());
+    presets.prints.update_dirty();
+    const auto native_export = presets.full_config();
+    config.set_key_value("different_settings_to_system", native_export.option("different_settings_to_system")->clone());
+    PlateData plate;
+    plate.plate_index = 0; plate.objects_and_instances.emplace_back(0, 0);
+    plate.plate_name = "Minimal test - one layer, one spool swap";
+    for (const auto* key : {"first_layer_print_sequence", "other_layers_print_sequence_nums", "other_layers_print_sequence"})
+        plate.config.set_key_value(key, config.option(key)->clone());
+    const auto project = files.plain.string() + ".3mf";
+    const auto sliced = files.execution.string() + ".3mf";
+    struct Archives {
+        std::vector<std::string> paths;
+        ~Archives() { for (const auto& path : paths) { boost::system::error_code ignored; fs::remove(path, ignored); } }
+    } archives{{project, sliced}};
+    StoreParams params;
+    params.path = project.c_str(); params.model = &model; params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    REQUIRE(store_bbs_3mf(params));
+    Model loaded_model;
+    DynamicPrintConfig loaded_config;
+    ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
+    PlateDataPtrs plates;
+    std::vector<Preset*> embedded;
+    bool is_bambu = false;
+    Semver version;
+    REQUIRE(load_bbs_3mf(project.c_str(), &loaded_config, &substitutions, &loaded_model, &plates,
+        &embedded, &is_bambu, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::Silence));
+    PresetBundle restored;
+    restored.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    if (!embedded.empty()) restored.load_project_embedded_presets(embedded, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    Preset::normalize(loaded_config);
+    restored.load_config_model(project, std::move(loaded_config), version);
+    auto imported = restored.full_config();
+    REQUIRE(AMS::serialize_execution(*AMS::execution_from_notes(imported.opt_string("process_notes"))) == AMS::serialize_execution(spec));
+    REQUIRE(loaded_model.objects.size() == 1);
+    REQUIRE(loaded_model.objects.front()->volumes.size() == 2);
+    REQUIRE(plates.size() == 1);
+    imported.apply(plates.front()->config);
+    Print reopened;
+    reopened.set_status_silent(); reopened.set_BBL_Printer(true); reopened.set_plate_index(0); reopened.set_plate_origin(Vec3d::Zero());
+    reopened.set_extruder_filament_info(restored.get_extruder_filament_info());
+    reopened.apply(loaded_model, imported); reopened.process();
+    GCodeProcessorResult repeated;
+    reopened.export_gcode(files.execution.string(), &repeated, nullptr);
+    REQUIRE(repeated.pause_printing.size() == 1);
+    {
+        std::ifstream reloaded(files.execution.string(), std::ios::binary);
+        REQUIRE(AMS::execution_gcode_error(reloaded, spec).empty());
+    }
+    plate.gcode_file = files.execution.string(); plate.is_sliced_valid = true;
+    plate.printer_model_id = "A1"; plate.nozzle_diameters = "0.2";
+    plate.pause_printing = repeated.pause_printing; plate.parse_filament_info(&repeated);
+    for (auto& filament : plate.slice_filaments_info) {
+        std::string display_type;
+        filament.type = config.get_filament_type(display_type, filament.id);
+        filament.color = colors[filament.id];
+        filament.filament_id = config.option<ConfigOptionStrings>("filament_ids")->get_at(filament.id);
+    }
+    REQUIRE(plate.slice_filaments_info.size() == 2);
+    params.path = sliced.c_str();
+    params.strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel;
+    REQUIRE(store_bbs_3mf(params));
+    release_PlateData_list(plates);
+    for (auto* preset : embedded) delete preset;
+    if (const char* destination = std::getenv("EXTENDED_AMS_MINIMAL_OUTPUT")) {
+        const auto folder = fs::absolute(destination);
+        fs::create_directories(folder);
+        const auto output = folder / "A1 minimal spool-swap test.3mf";
+        const auto fixed_output = folder / "A1 minimal spool-swap test.gcode.3mf";
+        REQUIRE_FALSE(fs::exists(output)); REQUIRE_FALSE(fs::exists(fixed_output));
+        fs::copy_file(project, output); fs::copy_file(sliced, fixed_output);
+        std::ofstream guide((folder / "SWAP GUIDE.html").string(), std::ios::binary);
+        guide << AMS::format_execution_guide(spec, true);
+        REQUIRE(bool(guide));
     }
 }

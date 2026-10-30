@@ -3916,9 +3916,11 @@ std::string GCode::placeholder_parser_process(const std::string &name, const std
                     if (unload != tested_unload)
                         throw std::runtime_error("The A1 unload block differs from the tested procedure.");
                     prefix = "; EAMS_VISIT " + std::to_string(*step->visit) + " " + std::to_string(step->request) + "\n";
-                    prefix += m_placeholder_parser.process("M400\nG90\nG1 Z{max_layer_z + 3.0} F1200\n" + unload + "\nM400\n",
+                    // The job relies on relative extrusion (M83). Restore it after G90 and again after the
+                    // pause so a resumed print cannot continue in absolute extrusion mode.
+                    prefix += m_placeholder_parser.process("M400\nG90\nM83\nG1 Z{max_layer_z + 3.0} F1200\n" + unload + "\nM400\n",
                         current_filament_id, config_override, &m_placeholder_parser_context);
-                    prefix += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\nM400 U1\n";
+                    prefix += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\nM400 U1\nM83\n";
                 }
                 prefix += ExtendedAMSLite::execution_selection_marker(*step);
             }

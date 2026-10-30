@@ -339,7 +339,7 @@ std::string color_name(const std::string& color)
     if (hi - lo < 28) return hi < 128 ? "Dark gray" : hi >= 160 ? "Light gray" : "Gray";
     if (r > g * 1.3 && g > b * 1.25 && hi < 175) return "Brown";
     if (r > 190 && g > 155 && b < 115) return "Yellow";
-    if (r > 180 && g > 65 && g < 170 && b < 110) return "Orange";
+    if (r > 180 && g > 65 && g < 170 && b < 110 && g * 5 > r * 2) return "Orange";
     if (r > 180 && b > 110 && g < 150) return "Pink";
     if (b >= hi && r > b * 0.5 && g < b * 0.7) return "Purple";
     if (g >= hi && b > g * 0.72 && r < g * 0.75) return "Cyan";
@@ -813,7 +813,7 @@ std::string execution_gcode_error(std::istream& input, const ExecutionSpec& spec
     std::size_t selects = 0, visits = 0, pauses = 0, magnets = 0;
     int pending = -1, current = -1;
     bool header = false, end = false, visit_open = false, scope = false, unloaded = false, closed = false;
-    bool magnet_open = false, magnet_paused = false;
+    bool magnet_open = false, magnet_paused = false, absolute_extrusion_risk = false;
     std::string line;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -882,11 +882,18 @@ std::string execution_gcode_error(std::istream& input, const ExecutionSpec& spec
                 } else if (id != current) return "An unplanned tool selection was found in the AMS Lite job.";
             }
         }
-        if (unloaded && (command == "G0" || command == "G1" || command == "G2" || command == "G3")) {
+        if (command == "M83") absolute_extrusion_risk = false;
+        else if (visit_open && (command == "G90" || command == "G91" || command == "M82")) absolute_extrusion_risk = true;
+        if (command == "M400" && parameter == "U1") absolute_extrusion_risk = true; // restored only by an explicit M83 after the pause
+        if (command == "G0" || command == "G1" || command == "G2" || command == "G3") {
             std::istringstream axes(line.substr(0, line.find(';')));
             while (axes >> parameter) if (parameter.size() > 1 && parameter.front() == 'E') {
-                try { if (std::stod(parameter.substr(1)) > 0.) return "The job would extrude while the AMS filament is unloaded."; }
+                double amount = 0.;
+                try { amount = std::stod(parameter.substr(1)); }
                 catch (...) { return "Unreadable extrusion in AMS Lite job."; }
+                if (amount > 0. && unloaded) return "The job would extrude while the AMS filament is unloaded.";
+                if (amount != 0. && absolute_extrusion_risk)
+                    return "Relative extrusion (M83) is not restored after an AMS Lite swap pause.";
             }
         }
     }

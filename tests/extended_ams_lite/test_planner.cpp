@@ -71,7 +71,7 @@ void execution_cases()
         if (!step) continue;
         if (step->visit)
             gcode += "; EAMS_VISIT " + std::to_string(*step->visit) + " " + std::to_string(step->request) +
-                "\nM620 S255\nT255\nM621 S255\n; PAUSE_PRINTING\nM400 U1\n";
+                "\nG90\nM83\nM620 S255\nT255\nM621 S255\n; PAUSE_PRINTING\nM400 U1\nM83\n";
         gcode += execution_selection_marker(*step) + "T" + std::to_string(r.filament) + "\nG1 E2\n";
         previous = r.filament;
     }
@@ -136,6 +136,13 @@ void execution_cases()
     corrupt = gcode;
     corrupt.insert(corrupt.find("M400 U1\n"), "G1 E2\n");
     check(!error(corrupt).empty(), "Extrusion while unloaded blocks submission");
+    corrupt = gcode;
+    corrupt.erase(corrupt.find("M400 U1\nM83\n") + 8, 4);
+    check(!error(corrupt).empty(), "Extrusion after a swap pause without restored relative mode blocks submission");
+    corrupt = gcode;
+    corrupt.erase(corrupt.find("G90\nM83\n") + 4, 4);
+    corrupt.erase(corrupt.find("M400 U1\nM83\n") + 8, 4);
+    check(!error(corrupt).empty(), "A swap that never restores relative extrusion blocks submission");
     check(!error("; process_notes = " + text).empty(), "Plan text in a config header cannot stand in for actual execution");
     ExecutionSession wrong(spec);
     wrong.begin(0);
@@ -303,6 +310,7 @@ void batch_scenarios()
     check(color_name("#FFFFFF") == "White" && color_name("#2463EB") == "Blue" && color_name("") == "Unknown color", "Readable colors and explicit unknown metadata");
     check(color_name("#A1A3A5") == "Light gray" && color_name("#636567") == "Dark gray", "Initial loading distinguishes the user's two gray spools");
     check(color_name("#FEFEFE") == "White" && color_name("#F28C1D") == "Orange", "Initial loading names the user's white and orange colors");
+    check(color_name("#E34B4B") == "Red" && color_name("#ED8736") == "Orange" && color_name("#FF6A13") == "Orange", "A strong red is not named orange");
     rejects([&] { plan_batches(input, 8, slots, {1, 1}, true); });
     rejects([&] { plan_batches(input, 8, slots, {8}, true); });
     rejects([&] { plan_batches(trace({0, 1}, 0), 8, slots, {}, true); });

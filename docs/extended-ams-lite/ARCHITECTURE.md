@@ -39,7 +39,9 @@ active unload/all-four replacement/resume in one pause during layer 4 of the v2
 probe on A1 firmware 01.08.01.00, 0.2 mm nozzle, PLA, LAN-only Developer Mode.
 See [A1-ALL-FOUR-TEST.md](A1-ALL-FOUR-TEST.md) for the exact tested sequence.
 A complete eight-identity, multiple-visit job is the next physical acceptance
-boundary; it is not established by those two tests or software compilation.
+boundary; it is not established by those two tests or software compilation. The
+first attempt lost extrusion after its first swap; see
+[FIRST-EIGHT-COLOR-PRINT.md](FIRST-EIGHT-COLOR-PRINT.md).
 
 The backend uses a fixed virtual-to-slot mapping for the complete job. It does
 not remap the running printer. The user's original brief describes using repeated
