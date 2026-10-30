@@ -10,6 +10,7 @@
 #include <boost/filesystem.hpp>
 #include <fstream>
 #include <sstream>
+#include <atomic>
 
 using namespace Slic3r;
 namespace MP = Slic3r::MagnetPockets;
@@ -59,6 +60,12 @@ TEST_CASE("Magnet pockets use physical clearances, native layer heights and symm
     CHECK(p.top_z == Approx(2.8).margin(0.0001)); CHECK(p.bottom_z == Approx(0.7).margin(0.0001));
     CHECK((p.top_z + p.bottom_z) / 2. == Approx(1.75).margin(0.0001));
     CHECK(p.pause_z == Approx(2.9).margin(0.0001)); CHECK(p.total_layers == 30); CHECK(p.cover_layer == 29);
+    std::atomic<unsigned> cancel_checks{0};
+    CHECK_THROWS(MP::plan(*object, 0, config, options, {}, [&] {
+        if (++cancel_checks >= 4) throw std::runtime_error("Canceled preview");
+    }));
+    CHECK(cancel_checks >= 4);
+    CHECK(MP::plan(*object, 0, config, options).centers == p.centers);
     REQUIRE(p.centers.size() == 2);
     CHECK((p.centers[0] + p.centers[1]).x() / 2. == Approx(120.));
     CHECK((p.centers[0] + p.centers[1]).y() / 2. == Approx(120.));

@@ -22,6 +22,9 @@
 #include <wx/stattext.h>
 #include <wx/timer.h>
 #include <optional>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 namespace Slic3r::GUI {
 namespace MP = MagnetPockets;
@@ -30,8 +33,10 @@ class MagnetPocketDialog : public DPIDialog {
 public:
     MagnetPocketDialog(wxWindow* parent, const ModelObject& object, std::size_t instance, DynamicPrintConfig config)
         : DPIDialog(parent, wxID_ANY, _L("Magnet pockets"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER),
-          m_object(object), m_instance(instance), m_config(std::move(config)), m_timer(this)
+          m_instance(instance), m_config(std::move(config)), m_timer(this)
     {
+        m_snapshot = std::make_shared<Model>();
+        m_snapshot->add_object(object);
         MP::Options defaults;
         m_existing = MP::pocket_centers(object, instance);
         for (const auto* v : object.volumes) if (MP::is_pocket(*v)) { defaults = MP::options_from_pocket(*v); break; }
@@ -100,37 +105,81 @@ public:
             if (i > 0) { m_diameter->SetValue(sizes[i][0]); m_thickness->SetValue(sizes[i][1]); changed(); }
         });
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { calculate(); }, m_timer.GetId());
-        m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { calculate(); if (m_plan) EndModal(wxID_OK); });
+        m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (m_plan && m_completed_revision == m_revision) EndModal(wxID_OK); });
         remove->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EndModal(wxID_REMOVE); });
-        calculate();
+        changed();
     }
-    ~MagnetPocketDialog() override { m_timer.Stop(); }
+    ~MagnetPocketDialog() override { m_timer.Stop(); if (m_job) m_job->canceled = true; }
     const MP::Plan& result() const { return *m_plan; }
     bool disable_support() const { return m_no_support->GetValue(); }
 protected:
     void on_dpi_changed(const wxRect&) override { Layout(); Refresh(); }
 private:
-    const ModelObject& m_object; std::size_t m_instance; DynamicPrintConfig m_config;
+    struct Job {
+        std::atomic<bool> done{false}, canceled{false};
+        std::size_t revision = 0;
+        std::optional<MP::Plan> plan;
+        std::string error;
+    };
+    std::shared_ptr<Model> m_snapshot;
+    std::shared_ptr<Job> m_job;
+    std::size_t m_instance; DynamicPrintConfig m_config;
+    std::size_t m_revision = 0, m_completed_revision = 0;
+    std::chrono::steady_clock::time_point m_not_before;
     wxTimer m_timer;
     wxChoice* m_preset; wxSpinCtrl *m_count, *m_cover;
     wxSpinCtrlDouble *m_diameter, *m_thickness, *m_dclear, *m_hclear, *m_edge, *m_floor;
-    wxCheckBox *m_keep, *m_no_support; wxPanel* m_preview; wxStaticText* m_summary; wxButton* m_apply = nullptr;
+    wxCheckBox *m_keep, *m_no_support; wxPanel* m_preview; wxStaticText* m_summary = nullptr; wxButton* m_apply = nullptr;
     std::vector<Vec2d> m_existing; std::optional<MP::Plan> m_plan;
-    void changed() { if (m_apply) m_apply->Disable(); m_timer.StartOnce(250); }
+    void changed() {
+        ++m_revision;
+        if (m_apply) m_apply->Disable();
+        if (m_job) m_job->canceled = true;
+        m_not_before = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
+        if (m_summary) m_summary->SetLabel(_L("Updating pocket preview..."));
+        m_timer.StartOnce(m_job ? 30 : 350);
+    }
     void calculate() {
-        m_timer.Stop(); m_plan.reset(); m_apply->Disable();
-        try {
-            MP::Options o; o.diameter = m_diameter->GetValue(); o.thickness = m_thickness->GetValue();
-            o.count = m_count->GetValue(); o.cover_layers = m_cover->GetValue();
-            o.diameter_allowance = m_dclear->GetValue(); o.depth_allowance = m_hclear->GetValue();
-            o.edge_wall = m_edge->GetValue(); o.bottom_wall = m_floor->GetValue();
-            m_plan = MP::plan(m_object, m_instance, m_config, o, m_keep->GetValue() ? m_existing : std::vector<Vec2d>{});
-            m_summary->SetLabel(wxString::Format(_L("%u pockets: %.2f mm diameter x %.2f mm deep. Center Z %.2f mm.\nPause before object layer %u of %u (Z %.2f mm), then print %u closing layers."),
-                o.count, m_plan->diameter, m_plan->depth, (m_plan->bottom_z + m_plan->top_z) / 2.,
-                m_plan->cover_layer, m_plan->total_layers, m_plan->pause_z, o.cover_layers));
-            m_apply->Enable();
-        } catch (const std::exception& error) { m_summary->SetLabel(wxString::FromUTF8(error.what())); }
-        m_summary->Wrap(65 * em_unit()); m_preview->Refresh(); Layout();
+        m_timer.Stop();
+        if (m_job) {
+            if (!m_job->done.load(std::memory_order_acquire)) { m_timer.StartOnce(30); return; }
+            auto completed = std::move(m_job);
+            if (completed->revision == m_revision && !completed->canceled) {
+                m_completed_revision = m_revision;
+                m_plan = std::move(completed->plan);
+                if (m_plan) {
+                    const auto& o = m_plan->options;
+                    m_summary->SetLabel(wxString::Format(_L("%u pockets: %.2f mm diameter x %.2f mm deep. Center Z %.2f mm.\nPause before object layer %u of %u (Z %.2f mm), then print %u closing layers."),
+                        o.count, m_plan->diameter, m_plan->depth, (m_plan->bottom_z + m_plan->top_z) / 2.,
+                        m_plan->cover_layer, m_plan->total_layers, m_plan->pause_z, o.cover_layers));
+                    m_apply->Enable();
+                } else m_summary->SetLabel(wxString::FromUTF8(completed->error));
+                m_summary->Wrap(65 * em_unit()); m_preview->Refresh(); Layout();
+                return;
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now < m_not_before) { m_timer.StartOnce(50); return; }
+        MP::Options o; o.diameter = m_diameter->GetValue(); o.thickness = m_thickness->GetValue();
+        o.count = m_count->GetValue(); o.cover_layers = m_cover->GetValue();
+        o.diameter_allowance = m_dclear->GetValue(); o.depth_allowance = m_hclear->GetValue();
+        o.edge_wall = m_edge->GetValue(); o.bottom_wall = m_floor->GetValue();
+        const auto centers = m_keep->GetValue() ? m_existing : std::vector<Vec2d>{};
+        const auto snapshot = m_snapshot;
+        const auto config = m_config;
+        const auto instance = m_instance;
+        auto job = std::make_shared<Job>(); job->revision = m_revision; m_job = job;
+        // No wx calls or references to the dialog/model being edited on this
+        // worker. Closing the dialog cancels safely without waiting for it.
+        std::thread([job, snapshot, config, instance, o, centers] {
+            try {
+                job->plan = MP::plan(*snapshot->objects.front(), instance, config, o, centers, [job] {
+                    if (job->canceled) throw std::runtime_error("Pocket preview canceled.");
+                });
+            } catch (const std::exception& error) { job->error = error.what(); }
+            job->done.store(true, std::memory_order_release);
+        }).detach();
+        m_timer.StartOnce(30);
     }
     void paint() {
         wxAutoBufferedPaintDC dc(m_preview); dc.SetBackground(wxBrush(wxColour(245, 245, 245))); dc.Clear();

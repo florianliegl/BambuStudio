@@ -46,5 +46,11 @@ private:
     Card make_card(wxSizer*, const wxString&);
     void set_card(Card&, int, const wxString&);
 };
+// Construct and destroy the dialog in its implementation unit. Callers do not
+// allocate this evolving UI class on their stack across separately built units.
+int show_extended_ams_lite_dialog(wxWindow*, const GCodeProcessorResult&, bool can_reorder,
+    const std::vector<std::string>& names = {}, const ExtendedAMSLite::ExecutionSpec* ready = nullptr,
+    std::vector<ExtendedAMSLite::LayerOrder>* orders = nullptr,
+    ExtendedAMSLite::ExecutionSpec* proposal = nullptr);
 }}
 #endif

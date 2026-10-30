@@ -274,4 +274,16 @@ void ExtendedAMSLiteDialog::on_dpi_changed(const wxRect& suggested_rect)
     Layout();
     Refresh();
 }
+int show_extended_ams_lite_dialog(wxWindow* parent, const GCodeProcessorResult& result, bool can_reorder,
+    const std::vector<std::string>& names, const AMS::ExecutionSpec* ready,
+    std::vector<AMS::LayerOrder>* orders, AMS::ExecutionSpec* proposal)
+{
+    ExtendedAMSLiteDialog dialog(parent, result, can_reorder, names, ready);
+    const int action = dialog.ShowModal();
+    if (action == wxID_APPLY || action == wxID_OK) {
+        if (orders) *orders = dialog.layer_orders();
+        if (proposal) *proposal = dialog.proposal();
+    }
+    return action;
+}
 }}

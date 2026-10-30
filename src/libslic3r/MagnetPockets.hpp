@@ -4,6 +4,7 @@
 #include "CustomGCode.hpp"
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace Slic3r {
 class Model;
@@ -32,7 +33,8 @@ bool is_insertion_pause(const CustomGCode::Item& item);
 Options options_from_pocket(const ModelVolume& volume);
 std::vector<Vec2d> pocket_centers(const ModelObject& object, std::size_t instance);
 Plan plan(const ModelObject& object, std::size_t instance, const DynamicPrintConfig& config,
-          const Options& options, const std::vector<Vec2d>& keep_centers = {});
+          const Options& options, const std::vector<Vec2d>& keep_centers = {},
+          const std::function<void()>& cancel = []{});
 // Validates the complete plan before changing the object. Native negative
 // volumes remain individually movable and are preserved by normal 3MF/undo.
 void apply(ModelObject& object, std::size_t instance, const Plan& plan);

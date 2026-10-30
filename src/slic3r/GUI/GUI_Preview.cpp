@@ -412,9 +412,11 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
             const bool can_reorder = !m_only_gcode && wxGetApp().is_editor() &&
                 plate->get_real_print_seq() == PrintSequence::ByLayer;
             const auto ready = ExtendedAMSLite::execution_from_notes(wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_string("process_notes"));
-            ExtendedAMSLiteDialog dialog(this, *m_gcode_result, can_reorder,
-                m_only_gcode ? std::vector<std::string>{} : wxGetApp().preset_bundle->filament_presets, ready ? &*ready : nullptr);
-            const int action = dialog.ShowModal();
+            std::vector<ExtendedAMSLite::LayerOrder> orders;
+            ExtendedAMSLite::ExecutionSpec proposal;
+            const int action = show_extended_ams_lite_dialog(this, *m_gcode_result, can_reorder,
+                m_only_gcode ? std::vector<std::string>{} : wxGetApp().preset_bundle->filament_presets,
+                ready ? &*ready : nullptr, &orders, &proposal);
             if (action == wxID_APPLY || action == wxID_OK) {
                 plater->take_snapshot("Prepare AMS Lite print");
                 if (action == wxID_OK) {
@@ -422,7 +424,7 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
                     if (printer.opt_string("printer_model") != "Bambu Lab A1" && printer.opt_string("printer_model") != "A1")
                         throw std::runtime_error("Select the Bambu Lab A1 printer profile before preparing this print.");
                     m_ams_preparation = std::make_shared<AMSPreparation>();
-                    m_ams_preparation->spec = dialog.proposal();
+                    m_ams_preparation->spec = std::move(proposal);
                     std::string id = boost::uuids::to_string(boost::uuids::random_generator()());
                     id.erase(std::remove(id.begin(), id.end(), '-'), id.end());
                     m_ams_preparation->spec.job_id = id.substr(0, 16);
@@ -436,7 +438,7 @@ bool Preview::init(wxWindow* parent, Bed3D& bed, Model* model)
                 // Never reorder already generated motion commands.
                 std::vector<int> first;
                 std::vector<LayerPrintSequence> others;
-                for (const auto& layer : dialog.layer_orders()) {
+                for (const auto& layer : orders) {
                     std::vector<int> ids;
                     for (int id : layer.filaments) ids.push_back(id + 1);
                     if (layer.layer == 1) first = ids;
@@ -566,8 +568,7 @@ void Preview::prepare_ams_slice()
                 const auto error = ExtendedAMSLite::execution_gcode_error(input, pending->spec);
                 if (!error.empty()) throw std::runtime_error(error);
                 m_ams_preparation.reset();
-                ExtendedAMSLiteDialog guide(this, *m_gcode_result, false, {}, &pending->spec);
-                guide.ShowModal();
+                show_extended_ams_lite_dialog(this, *m_gcode_result, false, {}, &pending->spec);
             }
         } catch (const std::exception& error) {
             m_ams_preparation.reset();
@@ -607,8 +608,8 @@ void Preview::check_ams_pause()
             _u8L("Open swap guide"), [preview, spec](wxEvtHandler*) {
                 if (!preview) return false;
                 GCodeProcessorResult empty;
-                ExtendedAMSLiteDialog guide(preview.get(), empty, false, {}, &spec);
-                guide.ShowModal(); return true;
+                show_extended_ams_lite_dialog(preview.get(), empty, false, {}, &spec);
+                return true;
             });
     } catch (const std::exception&) {
         // Missing/invalid local job metadata must never trigger swap instructions.

@@ -10,6 +10,12 @@ The default is **8 mm diameter x 2 mm thick**, with **0.20 mm added to the total
 pocket diameter**, **0.10 mm added to its depth**, and **two closing layers**.
 The diameter allowance is not an extra 0.20 mm on each side.
 
+Value edits use a cancellable background preview. Rapid changes are coalesced
+for 350 ms, only the latest result enables Apply, and Apply reuses that result.
+Mesh slicing batches all required heights together instead of rebuilding the
+slicing index separately at every height. Closing the dialog cancels its worker;
+the worker owns a private snapshot and never accesses widgets or the live model.
+
 For a 3 mm part using 0.10 mm layers, the result matches the supplied dimensions:
 
 | Property | Result |
@@ -105,3 +111,11 @@ the editable demo. The complete app compiled and linked. The magnet demo loaded
 in a responsive native window with no error/fatal entries in the startup log.
 The desktop **Extended AMS Lite** shortcut uses the separate magnet-tool runtime;
 **Magnet pockets demo** opens the editable sample and its adjacent instructions.
+
+The 2026-10-30 hotfix passed **339 assertions in seven real-slicer cases**,
+including cooperative preview cancellation. It also fixes the AMS Apply crash:
+the previous binary's Preview caller allocated a 1448-byte dialog while the
+implementation required 1472 bytes. Windows reported stack-cookie failure.
+The caller now invokes a modal factory that allocates/destroys the dialog in
+its own implementation unit; both units were rebuilt and the new PDB verifies
+that allocation boundary. Desktop shortcuts use `build/extended-ams-hotfix`.

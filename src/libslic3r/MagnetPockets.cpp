@@ -63,7 +63,7 @@ ExPolygons section(const Body& b, double z)
     }
     return diff_ex(union_ex(positive), union_ex(negative));
 }
-ExPolygons usable_centers(const Body& b, const Plan& p)
+ExPolygons usable_centers(const Body& b, const Plan& p, const std::function<void()>& cancel)
 {
     // Include intermediate sections and both sides of every mesh Z event. This
     // catches holes, stepped outlines and necks hidden by a bounding box alone.
@@ -82,10 +82,24 @@ ExPolygons usable_centers(const Body& b, const Plan& p)
     std::sort(zs.begin(), zs.end());
     zs.erase(std::unique(zs.begin(), zs.end(), [](double a, double b) { return std::abs(a - b) < 0.00001; }), zs.end());
     require(zs.size() <= 4096, "This shape is too complex for automatic magnet placement. Simplify the model or use manual negative parts.");
+    // Build the slicer's mesh index once for all planes, rather than once per
+    // plane. Image keychains can have hundreds of individual color meshes.
+    std::vector<float> planes(zs.begin(), zs.end());
+    std::vector<ExPolygons> positive(zs.size()), negative(zs.size());
+    for (const auto& mesh : b.positive) {
+        cancel(); auto slices = slice_mesh_ex(mesh.its, planes, cancel);
+        for (std::size_t i = 0; i < slices.size(); ++i) append(positive[i], std::move(slices[i]));
+    }
+    for (const auto& mesh : b.negative) {
+        cancel(); auto slices = slice_mesh_ex(mesh.its, planes, cancel);
+        for (std::size_t i = 0; i < slices.size(); ++i) append(negative[i], std::move(slices[i]));
+    }
     ExPolygons safe;
     bool first = true;
-    for (double z : zs) {
-        auto slice = offset_ex(section(b, z), float(-scale_(p.diameter / 2. + p.options.edge_wall)));
+    for (std::size_t i = 0; i < zs.size(); ++i) {
+        cancel();
+        auto outline = diff_ex(union_ex(positive[i]), union_ex(negative[i]));
+        auto slice = offset_ex(outline, float(-scale_(p.diameter / 2. + p.options.edge_wall)));
         safe = first ? std::move(slice) : intersection_ex(safe, slice);
         first = false;
         if (safe.empty()) break;
@@ -98,7 +112,7 @@ bool inside(const ExPolygons& regions, const Vec2d& p)
     const Point point(scale_(p.x()), scale_(p.y()));
     return std::any_of(regions.begin(), regions.end(), [&](const ExPolygon& region) { return region.contains(point); });
 }
-std::vector<Vec2d> arrange(const ExPolygons& safe, const BoundingBoxf3& bounds, const Plan& p)
+std::vector<Vec2d> arrange(const ExPolygons& safe, const BoundingBoxf3& bounds, const Plan& p, const std::function<void()>& cancel)
 {
     const Vec2d middle = bounds.center().head<2>();
     const Vec2d size = bounds.size().head<2>();
@@ -112,6 +126,7 @@ std::vector<Vec2d> arrange(const ExPolygons& safe, const BoundingBoxf3& bounds, 
         if (ix || iy) anchors.push_back(middle + Vec2d(size.x() * ix / 20., size.y() * iy / 20.));
     std::stable_sort(anchors.begin(), anchors.end(), [&](const Vec2d& a, const Vec2d& b) { return (a - middle).squaredNorm() < (b - middle).squaredNorm(); });
     for (const auto& center : anchors) {
+        cancel();
         if ((p.options.count & 1) && !inside(safe, center)) continue;
         if (p.options.count == 1) return {center};
         if (p.options.count > 9) {
@@ -149,6 +164,7 @@ std::vector<Vec2d> arrange(const ExPolygons& safe, const BoundingBoxf3& bounds, 
             std::vector<Vec2d> placed;
             if (p.options.count & 1) placed.push_back(center);
             while (placed.size() < p.options.count) {
+                cancel();
                 double best = -1.;
                 Vec2d chosen;
                 for (const auto& a : candidates) {
@@ -210,8 +226,9 @@ std::vector<Vec2d> pocket_centers(const ModelObject& object, std::size_t instanc
     }
     return out;
 }
-Plan plan(const ModelObject& object, std::size_t instance, const DynamicPrintConfig& config, const Options& options, const std::vector<Vec2d>& keep_centers)
+Plan plan(const ModelObject& object, std::size_t instance, const DynamicPrintConfig& config, const Options& options, const std::vector<Vec2d>& keep_centers, const std::function<void()>& cancel)
 {
+    cancel();
     validate(options);
     require(config.opt_enum<PrintSequence>("print_sequence") != PrintSequence::ByObject, "Magnet insertion pauses require printing by layer.");
     const auto b = body(object, instance);
@@ -226,12 +243,12 @@ Plan plan(const ModelObject& object, std::size_t instance, const DynamicPrintCon
     p.pause_z = stack[2 * (p.cover_layer - 1) + 1];
     p.bottom_z = p.top_z - p.depth;
     require(p.bottom_z >= options.bottom_wall - tolerance, "This magnet plus its cover would leave too little plastic below the pocket. Use a thinner magnet or a thicker part.");
-    const auto safe = usable_centers(b, p);
+    const auto safe = usable_centers(b, p, cancel);
     p.footprint = section(b, (p.bottom_z + p.top_z) / 2.);
     if (!keep_centers.empty()) {
         require(keep_centers.size() == options.count, "The requested count differs from the existing pockets. Turn off Keep positions to arrange them again.");
         p.centers = keep_centers;
-    } else p.centers = arrange(safe, b.bounds, p);
+    } else p.centers = arrange(safe, b.bounds, p, cancel);
     for (std::size_t i = 0; i < p.centers.size(); ++i) {
         require(inside(safe, p.centers[i]), "A magnet pocket is outside the solid body or too close to an edge/hole. Move it inward or arrange the pockets again.");
         for (std::size_t j = 0; j < i; ++j)
