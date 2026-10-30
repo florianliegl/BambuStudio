@@ -6,6 +6,7 @@
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/FilamentMixer.hpp"
 #include "libslic3r/ExtendedAMSLite/Execution.hpp"
+#include "ExtendedAMSLiteDialog.hpp"
 #include <boost/filesystem/fstream.hpp>
 #include "FilamentBitmapUtils.hpp"
 #include "GUI.hpp"
@@ -3246,10 +3247,7 @@ void SelectMachineDialog::on_send_print()
             if (notes.find("[[EXTENDED_AMS_LITE_") != std::string::npos) {
                 if (!apply_extended_ams_mapping(obj_)) throw std::runtime_error("Could not apply the prepared AMS Lite slot assignments.");
                 extended_spec = ExtendedAMSLite::execution_from_notes(notes);
-                const auto guide = ExtendedAMSLite::format_execution_guide(*extended_spec);
-                if (wxMessageBox(wxString::FromUTF8(guide.substr(0, guide.find("At a swap pause"))) + "\n" +
-                        _L("Are these initial colors loaded in the shown slots? Stay beside the printer for the first complete eight-color test. Slot assignments are fixed for this print."),
-                        _L("Check initial AMS Lite loading"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) {
+                if (!confirm_extended_ams_initial_loading(this, *extended_spec)) {
                     Enable_Send_Button(true); return;
                 }
             }

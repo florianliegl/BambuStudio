@@ -286,4 +286,69 @@ int show_extended_ams_lite_dialog(wxWindow* parent, const GCodeProcessorResult& 
     }
     return action;
 }
+namespace {
+class InitialLoadingDialog : public DPIDialog {
+public:
+    InitialLoadingDialog(wxWindow* parent, const AMS::ExecutionSpec& spec)
+        : DPIDialog(parent, wxID_ANY, _L("Check initial AMS Lite loading"), wxDefaultPosition, wxDefaultSize,
+                    wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+    {
+        AMS::verify_execution(spec);
+        auto* root = new wxBoxSizer(wxVERTICAL);
+        auto* heading = new wxStaticText(this, wxID_ANY, _L("Load these colors before printing"));
+        heading->SetFont(heading->GetFont().Bold().Larger());
+        root->Add(heading, 0, wxALL, em_unit());
+        root->Add(new wxStaticText(this, wxID_ANY, _L("Match each spool to its numbered slot.")), 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+        auto* row = new wxBoxSizer(wxHORIZONTAL);
+        std::array<wxPanel*, 4> swatches;
+        std::array<wxColour, 4> colors;
+        for (std::size_t slot = 0; slot < 4; ++slot) {
+            const int id = spec.plan.schedule.initial_slots[slot];
+            const AMS::Filament* filament = id < 0 ? nullptr : &spec.filaments.at(std::size_t(id));
+            const auto name = filament ? AMS::color_name(filament->color) : std::string("Not used at start");
+            auto* panel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+            auto* card = new wxBoxSizer(wxVERTICAL);
+            auto* title = new wxStaticText(panel, wxID_ANY, wxString::Format(_L("Slot %u (A%u)"), unsigned(slot + 1), unsigned(slot + 1)));
+            title->SetFont(title->GetFont().Bold());
+            card->Add(title, 0, wxALL, em_unit());
+            swatches[slot] = new wxPanel(panel, wxID_ANY, wxDefaultPosition, wxSize(17 * em_unit(), 7 * em_unit()), wxBORDER_SIMPLE);
+            colors[slot] = filament && name != "Unknown color" ? wxColour(wxString::FromUTF8(filament->color.substr(0, 7))) : wxColour(180, 180, 180);
+            card->Add(swatches[slot], 0, wxEXPAND | wxLEFT | wxRIGHT, em_unit());
+            auto* color_name = new wxStaticText(panel, wxID_ANY, wxString::FromUTF8(name));
+            color_name->SetFont(color_name->GetFont().Bold().Larger());
+            card->Add(color_name, 0, wxALL, em_unit());
+            if (filament) {
+                auto* identity = new wxStaticText(panel, wxID_ANY, wxString::FromUTF8("V" + std::to_string(id + 1) + " / " + filament->material + "\n" + filament->color));
+                card->Add(identity, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+                auto* profile = new wxStaticText(panel, wxID_ANY, wxString::FromUTF8(filament->name));
+                profile->SetFont(profile->GetFont().Smaller());
+                profile->Wrap(17 * em_unit());
+                profile->SetToolTip(wxString::FromUTF8(filament->name));
+                card->Add(profile, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+            }
+            panel->SetSizer(card); row->Add(panel, 1, wxEXPAND | wxRIGHT, em_unit() / 2);
+        }
+        root->Add(row, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+        auto* note = new wxStaticText(this, wxID_ANY, _L("Names are based on your project colors. Use the swap guide for later spool replacements."));
+        note->Wrap(80 * em_unit());
+        root->Add(note, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+        auto* buttons = new wxBoxSizer(wxHORIZONTAL); buttons->AddStretchSpacer();
+        auto* back = new wxButton(this, wxID_CANCEL, _L("Back"));
+        auto* send = new wxButton(this, wxID_OK, _L("Confirm loading and send"));
+        buttons->Add(back, 0, wxRIGHT, em_unit()); buttons->Add(send);
+        root->Add(buttons, 0, wxEXPAND | wxALL, em_unit());
+        SetSizerAndFit(root); SetMinSize(GetSize());
+        wxGetApp().UpdateDarkUI(this);
+        for (std::size_t slot = 0; slot < 4; ++slot) swatches[slot]->SetBackgroundColour(colors[slot]);
+        back->SetDefault(); back->SetFocus(); SetEscapeId(wxID_CANCEL); CenterOnParent();
+    }
+protected:
+    void on_dpi_changed(const wxRect&) override { Layout(); Refresh(); }
+};
+}
+bool confirm_extended_ams_initial_loading(wxWindow* parent, const AMS::ExecutionSpec& spec)
+{
+    InitialLoadingDialog dialog(parent, spec);
+    return dialog.ShowModal() == wxID_OK;
+}
 }}

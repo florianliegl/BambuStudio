@@ -47,6 +47,8 @@ void execution_cases()
     spec.slots.resize(4);
     for (int i = 0; i < 8; ++i) spec.filaments.push_back({"PLA \"color\" " + std::to_string(i), "PLA", "#2463EB"});
     spec.plan = plan_batches(requests, 8, spec.slots);
+    check(format_execution_guide(spec).find("Slot 1: V1 Blue [PLA, #2463EB]") != std::string::npos,
+        "Execution guides show a readable color name instead of the generic filament profile name");
     check(spec.plan.schedule.stops.size() == 2, "Carried banks need one visit per full eight-color layer");
     const auto text = serialize_execution(spec);
     check(serialize_execution(deserialize_execution(text)) == text, "Execution settings round trip exactly");
@@ -231,6 +233,8 @@ void batch_scenarios()
     check(report.find("G-code line ID") == std::string::npos, "Proposed report omits fictitious G-code positions");
     check(html.find("&lt;profile&gt;") != std::string::npos && html.find("<profile>") == std::string::npos, "Batch HTML escapes metadata");
     check(color_name("#FFFFFF") == "White" && color_name("#2463EB") == "Blue" && color_name("") == "Unknown color", "Readable colors and explicit unknown metadata");
+    check(color_name("#A1A3A5") == "Light gray" && color_name("#636567") == "Dark gray", "Initial loading distinguishes the user's two gray spools");
+    check(color_name("#FEFEFE") == "White" && color_name("#F28C1D") == "Orange", "Initial loading names the user's white and orange colors");
     rejects([&] { plan_batches(input, 8, slots, {1, 1}, true); });
     rejects([&] { plan_batches(input, 8, slots, {8}, true); });
     rejects([&] { plan_batches(trace({0, 1}, 0), 8, slots, {}, true); });

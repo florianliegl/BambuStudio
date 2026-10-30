@@ -129,6 +129,15 @@ tool during slicing. It retains the command; the execution validator checks the
 actual emitted unload/pause/load stream. This existing diagnostic is distinct from
 a printer-reported error.
 
+The 2026-10-30 initial-loading confirmation uses four visual cards with large
+project-color swatches and readable names. Light/dark gray are distinguished;
+virtual IDs, material, hex and filament profile remain secondary details.
+The buttons are **Back** and **Confirm loading and send**. The updated color
+build passed **38,328 standalone checks** and **339 real-slicer assertions**.
+It compiled/linked and passed the executable's CLI startup check. Existing Studio
+windows were left running. The next desktop launch uses `build/extended-ams-colors`
+with the existing hotfix settings and saved job guides.
+
 For full Windows builds see [WINDOWS-BUILD.md](WINDOWS-BUILD.md). Upstream compiler
 and CRT warnings remain. Unrelated aggregate OBJ/rotation/raster tests are not
 claimed as passing. No screen inspection or UI automation is used: compilation,

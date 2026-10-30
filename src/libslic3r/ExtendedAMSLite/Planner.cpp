@@ -336,7 +336,7 @@ std::string color_name(const std::string& color)
     const int hi = std::max({r, g, b}), lo = std::min({r, g, b});
     if (hi < 48) return "Black";
     if (lo > 218) return "White";
-    if (hi - lo < 28) return "Gray";
+    if (hi - lo < 28) return hi < 128 ? "Dark gray" : hi >= 160 ? "Light gray" : "Gray";
     if (r > g * 1.3 && g > b * 1.25 && hi < 175) return "Brown";
     if (r > 190 && g > 155 && b < 115) return "Yellow";
     if (r > 180 && g > 65 && g < 170 && b < 110) return "Orange";
@@ -722,13 +722,18 @@ std::string execution_job_prefix(const ExecutionSpec& spec) { return "EAMS-" + s
 
 std::string format_execution_guide(const ExecutionSpec& spec, bool html)
 {
+    auto display = [&](int id) {
+        if (id < 0) return std::string("Not used at start");
+        const auto& f = spec.filaments.at(std::size_t(id));
+        return "V" + std::to_string(id + 1) + " " + color_name(f.color) + " [" + f.material + ", " + f.color + "]";
+    };
     std::ostringstream out;
     out << "Extended AMS Lite - print swap guide\n";
     out << "A1 / PLA / four AMS Lite slots / LAN Developer Mode\n"
         << spec.plan.schedule.stops.size() << " visits, one pause per visit.\n\n"
         << "Load these first:\n";
     for (std::size_t s = 0; s < 4; ++s)
-        out << "Slot " << s + 1 << ": " << label(spec.filaments, spec.plan.schedule.initial_slots[s]) << '\n';
+        out << "Slot " << s + 1 << ": " << display(spec.plan.schedule.initial_slots[s]) << '\n';
     out << "\nAt a swap pause, the active filament is already unloaded. Replace all spools listed for that visit. "
            "Feed each replacement to the AMS inlet. Keep other spools loaded. Press Resume only after every replacement is complete. "
            "Do not change the job's fixed slot mapping. An error or manual pause does not mean a swap visit.\n";
@@ -739,9 +744,9 @@ std::string format_execution_guide(const ExecutionSpec& spec, bool html)
         const auto& request = spec.plan.requests[stop.before_request];
         out << "\nVisit " << v + 1 << " of " << spec.plan.schedule.stops.size() << " - Layer " << request.layer << '\n';
         for (const auto& swap : stop.replacements)
-            out << "Slot " << swap.slot + 1 << ": remove " << label(spec.filaments, swap.remove)
-                << " -> insert " << label(spec.filaments, swap.insert) << '\n';
-        out << "Next color: " << label(spec.filaments, request.filament) << '\n';
+            out << "Slot " << swap.slot + 1 << ": remove " << display(swap.remove)
+                << " -> insert " << display(swap.insert) << '\n';
+        out << "Next color: " << display(request.filament) << '\n';
     }
     if (!html) return out.str();
     return "<!doctype html><html><meta charset=utf-8><title>AMS Lite swap guide</title>"

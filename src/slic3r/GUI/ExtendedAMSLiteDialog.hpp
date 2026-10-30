@@ -52,5 +52,6 @@ int show_extended_ams_lite_dialog(wxWindow*, const GCodeProcessorResult&, bool c
     const std::vector<std::string>& names = {}, const ExtendedAMSLite::ExecutionSpec* ready = nullptr,
     std::vector<ExtendedAMSLite::LayerOrder>* orders = nullptr,
     ExtendedAMSLite::ExecutionSpec* proposal = nullptr);
+bool confirm_extended_ams_initial_loading(wxWindow*, const ExtendedAMSLite::ExecutionSpec&);
 }}
 #endif
