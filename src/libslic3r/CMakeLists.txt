@@ -30,6 +30,8 @@ endif()
 set(lisbslic3r_sources
     MagnetPockets.cpp
     MagnetPockets.hpp
+    WhiteLayer.cpp
+    WhiteLayer.hpp
     ExtendedAMSLite/Planner.cpp
     ExtendedAMSLite/Planner.hpp
     ArcFitter.cpp

@@ -4,6 +4,7 @@
 
 #include "GUI_Factories.hpp"
 #include "MagnetPocketDialog.hpp"
+#include "WhiteLayerDialog.hpp"
 #include "GUI_ObjectList.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
@@ -690,6 +691,11 @@ void MenuFactory::append_menu_items_add_volume(wxMenu* menu)
     if (magnets_id != wxNOT_FOUND) menu->Destroy(magnets_id);
     append_menu_item(menu, wxID_ANY, _L("Magnet pockets..."), _L("Create fitted magnet pockets and an insertion pause"),
         [this](wxCommandEvent&) { show_magnet_pockets(m_parent); }, "", menu,
+        []() { return obj_list()->is_instance_or_object_selected(); }, m_parent);
+    const auto white_id = menu->FindItem(_L("White layer..."));
+    if (white_id != wxNOT_FOUND) menu->Destroy(white_id);
+    append_menu_item(menu, wxID_ANY, _L("White layer..."), _L("Print layers behind the colored face in white"),
+        [this](wxCommandEvent&) { show_white_layer(m_parent); }, "", menu,
         []() { return obj_list()->is_instance_or_object_selected(); }, m_parent);
 }
 

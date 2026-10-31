@@ -3,6 +3,7 @@
 #define slic3r_ExtendedAMSLite_Planner_hpp_
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -70,7 +71,45 @@ BatchPlan plan_batches(const std::vector<Request>& requests, std::size_t filamen
                        const std::vector<Slot>& slots,
                        const std::vector<int>& first_layer_order = {},
                        bool reorder_layers = false);
+// Internal entry used by the optimizer: the same planner with the bank partition and/or the
+// order inside each layer supplied instead of derived. Both are validated; null keeps the default.
+BatchPlan plan_batches_custom(const std::vector<Request>& requests, std::size_t filament_count,
+                              const std::vector<Slot>& slots, const std::vector<int>& first_layer_order,
+                              bool reorder_layers, const std::vector<std::vector<int>>* banks,
+                              const std::vector<std::vector<int>>* layer_orders);
 void verify_batches(const std::vector<Slot>& slots, const BatchPlan& result);
+
+// Purge cost of changing from one virtual filament to another (the project's flush table,
+// mm^3, row = from). flow converts volume to an estimated purge time.
+struct PurgeModel {
+    std::size_t count = 0;
+    std::vector<double> volume; // count x count
+    double flow = 5.; // mm^3/s, estimate
+    bool valid() const { return count > 0 && volume.size() == count * count && flow > 0.; }
+    double at(int from, int to) const;
+};
+struct PlanScore {
+    std::size_t visits = 0, replacements = 0, color_changes = 0;
+    double purge_mm3 = 0., purge_seconds = 0.;
+};
+double purge_volume(const std::vector<Request>& requests, const PurgeModel& model);
+PlanScore score_plan(const BatchPlan& plan, const PurgeModel& model);
+
+struct OptimizedBatches {
+    BatchPlan plan; // fewest visits, then least purge
+    PlanScore score;
+    BatchPlan baseline; // the plain planner result, for comparison
+    PlanScore baseline_score;
+    // One more visit than `plan` with enough less purge time to be worth suggesting.
+    std::optional<BatchPlan> faster;
+    PlanScore faster_score;
+};
+// Visits (the manual work) always come first; purge is only a tie-breaker among plans with the
+// same number of visits. A plan with exactly one more visit is offered when it saves at least
+// `suggest_seconds` of purging. A user-chosen first-layer order is never changed.
+OptimizedBatches optimize_batches(const std::vector<Request>& requests, std::size_t filament_count,
+                                  const std::vector<Slot>& slots, const std::vector<int>& first_layer_order,
+                                  const PurgeModel& purge, double suggest_seconds = 600.);
 // Studio serializes each native sequence with an equal record width. Append
 // unused identities after each layer's required prefix to retain that contract.
 std::vector<LayerOrder> complete_layer_orders(const BatchPlan& result);

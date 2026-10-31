@@ -19,6 +19,29 @@
 #include <stdexcept>
 namespace Slic3r { namespace GUI {
 namespace AMS = ExtendedAMSLite;
+namespace {
+// The project's own flushing table, so the planner weighs a color change the way Studio does.
+AMS::PurgeModel project_purge_model(std::size_t count)
+{
+    AMS::PurgeModel model;
+    auto* bundle = wxGetApp().preset_bundle;
+    if (!bundle || count == 0) return model;
+    const auto* matrix = bundle->project_config.option<ConfigOptionFloats>("flush_volumes_matrix");
+    if (!matrix || matrix->values.size() < count * count || matrix->values.size() % (count * count) != 0) return model;
+    double multiplier = 1.;
+    if (const auto* m = bundle->project_config.option<ConfigOptionFloats>("flush_multiplier"))
+        if (!m->values.empty() && m->values.front() > 0.) multiplier = m->values.front();
+    model.count = count;
+    for (std::size_t i = 0; i < count * count; ++i) model.volume.push_back(matrix->values[i] * multiplier);
+    // Purge time is an estimate: volume over the slowest used filament's flow limit.
+    double flow = 0.;
+    if (const auto* speeds = bundle->full_config().option<ConfigOptionFloats>("filament_max_volumetric_speed"))
+        for (std::size_t i = 0; i < std::min(count, speeds->values.size()); ++i)
+            if (speeds->values[i] > 0. && (flow == 0. || speeds->values[i] < flow)) flow = speeds->values[i];
+    model.flow = flow > 0. ? flow : 5.;
+    return model;
+}
+}
 ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProcessorResult& result,
     bool can_reorder, const std::vector<std::string>& names, const AMS::ExecutionSpec* ready)
     : DPIDialog(parent, wxID_ANY, _L("Extended AMS Lite"), wxDefaultPosition, wxDefaultSize,
@@ -60,6 +83,13 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     m_optimize->Enable(m_can_reorder);
     m_optimize->SetToolTip(_L("Reordering requires an editable project printing by layer. Imported G-code can only be analyzed."));
     root->Add(m_optimize, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    if (!ready) m_purge = project_purge_model(m_filaments.size());
+    m_saving = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    root->Add(m_saving, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
+    m_faster = new wxCheckBox(this, wxID_ANY, wxEmptyString);
+    m_faster->Hide();
+    m_faster->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { calculate(); });
+    root->Add(m_faster, 0, wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
     m_summary = new wxStaticText(this, wxID_ANY, wxEmptyString);
     m_summary->SetFont(m_summary->GetFont().Bold());
     root->Add(m_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, em_unit());
@@ -79,6 +109,7 @@ ExtendedAMSLiteDialog::ExtendedAMSLiteDialog(wxWindow* parent, const GCodeProces
     auto* settings = new wxBoxSizer(wxVERTICAL);
     m_manual = new wxCheckBox(pane, wxID_ANY, _L("Use my first-layer order (select a color, then move it up or down)"));
     m_manual->Enable(m_can_reorder);
+    m_manual->SetToolTip(_L("Your first-layer order always wins: the planner never changes it, even to save swaps or purge."));
     settings->Add(m_manual, 0, wxALL, em_unit() / 2);
     auto* order_row = new wxBoxSizer(wxHORIZONTAL);
     m_order = new wxListBox(pane, wxID_ANY, wxDefaultPosition, wxSize(-1, 8 * em_unit()));
@@ -196,9 +227,39 @@ void ExtendedAMSLiteDialog::calculate()
     try {
         std::vector<AMS::Slot> slots;
         for (std::size_t s = 0; s < 4; ++s) slots.push_back({m_initial[s]->GetSelection() - 1, m_locked[s]->GetValue()});
-        if (!m_ready) m_plan = AMS::plan_batches(m_requests, m_filaments.size(), slots, m_manual->GetValue() ? m_order_ids : std::vector<int>{}, m_optimize->GetValue());
+        if (!m_ready) {
+            const auto first_order = m_manual->GetValue() ? m_order_ids : std::vector<int>{};
+            m_opt = {};
+            m_optimized = m_optimize->GetValue() && m_purge.valid();
+            if (m_optimized) {
+                // Fewest swaps first; purge only breaks ties. One extra swap is offered when it saves a lot.
+                m_opt = AMS::optimize_batches(m_requests, m_filaments.size(), slots, first_order, m_purge);
+                m_plan = m_faster->GetValue() && m_opt.faster ? *m_opt.faster : m_opt.plan;
+            } else m_plan = AMS::plan_batches(m_requests, m_filaments.size(), slots, first_order, m_optimize->GetValue());
+        }
         for (std::size_t s = 0; s < 4; ++s) set_card(m_loading[s], m_plan.schedule.initial_slots[s], filament_label(m_plan.schedule.initial_slots[s]));
         m_summary->SetLabel(wxString::Format(_L("%d visits  /  %d spool replacements  /  %d color changes"), int(m_plan.schedule.stops.size()), int(m_plan.spool_replacements), int(m_plan.color_changes)));
+        wxString saving;
+        if (m_purge.valid() && !m_ready) {
+            const auto chosen = AMS::score_plan(m_plan, m_purge);
+            saving = wxString::Format(_L("Purging: about %.0f cm3 (roughly %d min)"), chosen.purge_mm3 / 1000., int(chosen.purge_seconds / 60. + 0.5));
+            if (m_optimized) {
+                const double saved = m_opt.baseline_score.purge_mm3 - chosen.purge_mm3;
+                if (saved > 1.) saving += wxString::Format(_L("  -  %.0f cm3 (about %d min) less than the standard order"), saved / 1000., int(saved / m_purge.flow / 60. + 0.5));
+            }
+        }
+        m_saving->SetLabel(saving);
+        m_saving->Show(!saving.empty());
+        if (m_opt.faster) {
+            const auto faster = AMS::score_plan(*m_opt.faster, m_purge);
+            const double minutes = (m_opt.score.purge_seconds - faster.purge_seconds) / 60.;
+            m_faster->SetLabel(wxString::Format(_L("Suggestion: take 1 more swap (%d visits instead of %d) to save about %d min of purging"),
+                int(faster.visits), int(m_opt.score.visits), int(minutes + 0.5)));
+            m_faster->Show();
+        } else {
+            m_faster->SetValue(false);
+            m_faster->Hide();
+        }
         for (std::size_t i = 0; i < m_plan.schedule.stops.size(); ++i) {
             const auto& stop = m_plan.schedule.stops[i];
             const auto& r = m_plan.requests[stop.before_request];
@@ -223,14 +284,21 @@ void ExtendedAMSLiteDialog::calculate()
 void ExtendedAMSLiteDialog::show_visit()
 {
     if (!m_valid) return;
-    for (auto& card : m_changes) set_card(card, -1, _L("Keep loaded"));
+    for (auto& card : m_changes) set_card(card, -1, wxEmptyString);
     if (m_plan.schedule.stops.empty()) { m_detail->SetLabel(_L("All required colors fit in the four slots.")); return; }
-    const auto& stop = m_plan.schedule.stops.at(std::size_t(m_visits->GetSelection()));
+    const std::size_t visit = std::size_t(m_visits->GetSelection());
+    const auto& stop = m_plan.schedule.stops.at(visit);
     const auto& r = m_plan.requests[stop.before_request];
+    // Show what every slot holds at this visit, so "keep" is as explicit as "replace".
+    auto loaded = m_plan.schedule.initial_slots;
+    for (std::size_t i = 0; i < visit; ++i)
+        for (const auto& c : m_plan.schedule.stops[i].replacements) loaded[c.slot] = c.insert;
+    for (std::size_t s = 0; s < loaded.size() && s < m_changes.size(); ++s)
+        set_card(m_changes[s], loaded[s], _L("KEEP - do not touch\n") + filament_label(loaded[s]));
     for (const auto& c : stop.replacements)
-        set_card(m_changes[c.slot], c.insert, _L("Remove: ") + filament_label(c.remove) + "\n" + _L("Insert: ") + filament_label(c.insert));
-    wxString detail = _L("Next: ") + filament_label(r.filament);
-    detail += m_ready ? _L("\nOne pause for this visit. Replace only the spools marked Insert. Resume after every replacement is complete.") :
+        set_card(m_changes[c.slot], c.insert, _L("REPLACE this spool\nTake out: ") + filament_label(c.remove) + "\n" + _L("Put in: ") + filament_label(c.insert));
+    wxString detail = _L("Replace ") + wxString::Format("%d", int(stop.replacements.size())) + _L(" of 4 spools at this visit. Next color: ") + filament_label(r.filament);
+    detail += m_ready ? _L("\nOne pause for this visit. Replace only the spools marked REPLACE and leave the KEEP spools alone. Resume after every replacement is complete.") :
         _L("\nChoose Prepare print to regenerate this plate with the required unload-and-swap pauses.");
     m_detail->SetLabel(detail);
     m_detail->Wrap(85 * em_unit());

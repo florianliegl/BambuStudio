@@ -12,9 +12,11 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/WhiteLayer.hpp"
 #include <boost/filesystem.hpp>
 #include <cstdlib>
 #include <fstream>
+#include <array>
 #include <map>
 #include <sstream>
 #include <set>
@@ -1065,4 +1067,256 @@ TEST_CASE("A1 minimal coupon swaps one spool inside a single layer", "[ExtendedA
         guide << AMS::format_execution_guide(spec, true);
         REQUIRE(bool(guide));
     }
+}
+
+// A color-layer swatch plate: six stack variants, one tile each, printed face down. The face is an
+// orange | blue background with the stack label written in white, mirrored so it reads correctly
+// when the printed face is looked at. Only four filaments are used (black, white, orange, light
+// blue), so it needs no spool swap.
+TEST_CASE("A1 color-layer swatch plate prints with four filaments and no swap", "[ExtendedAMSLite][HardwareProbe]")
+{
+    namespace fs = boost::filesystem;
+    const auto resources = fs::path(TEST_DATA_DIR).parent_path().parent_path() / "resources";
+    set_resources_dir(resources.string());
+    PresetBundle presets;
+    presets.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    REQUIRE(presets.printers.select_preset_by_name("Bambu Lab A1 0.2 nozzle", true, true));
+    REQUIRE(presets.prints.select_preset_by_name("0.10mm Standard @BBL A1 0.2 nozzle", true, true));
+    REQUIRE(presets.filaments.select_preset_by_name("Bambu PLA Basic @BBL A1 0.2 nozzle", true, true));
+    presets.filament_presets.assign(4, "Bambu PLA Basic @BBL A1 0.2 nozzle");
+    presets.set_num_filaments(4);
+    const std::vector<std::string> colors{"#000000", "#FEFEFE", "#F28C1D", "#4588C8"};
+    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings(colors));
+    auto config = presets.full_config();
+    config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPEI));
+    config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(0.1));
+    config.set_key_value("layer_height", new ConfigOptionFloat(0.1));
+    std::vector<double> flush(16, 140.);
+    for (int i = 0; i < 4; ++i) flush[i * 4 + i] = 0.;
+    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(flush));
+
+    struct Stack { int color_layers, white_layers; };
+    const std::vector<Stack> rows{{4, 0}, {3, 0}, {3, 1}, {2, 0}, {2, 2}, {2, 1}, {1, 2}};
+    const char* const labels[] = {"4C", "3C", "3C+1W", "2C", "2C+2W", "2C+1W", "1C+2W"};
+    constexpr int black = 1, white = 2, orange = 3, blue = 4; // extruder numbers
+    constexpr int columns = 36, pixel_rows = 15, text_rows = 7;
+    const double layer = 0.1, total = 0.8, pixel = 0.8, x0 = 108., pitch = 15.;
+    // 5x7 pixel glyphs for the stack labels.
+    const std::map<char, std::array<const char*, 7>> font{
+        {'1', {"..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."}},
+        {'2', {".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"}},
+        {'3', {".###.", "#...#", "....#", "..##.", "....#", "#...#", ".###."}},
+        {'4', {"...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."}},
+        {'C', {".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."}},
+        {'W', {"#...#", "#...#", "#...#", "#.#.#", "#.#.#", "##.##", "#...#"}},
+        {'+', {".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."}}};
+    Model model;
+    auto* object = model.add_object();
+    object->name = "Color layer swatch plate";
+    const auto add = [&](double x, double y, double z0, double z1, double w, double d, int extruder, const std::string& name) {
+        auto mesh = make_cube(w, d, z1 - z0);
+        mesh.translate(float(x), float(y), float(z0));
+        auto* volume = object->add_volume(std::move(mesh));
+        volume->name = name;
+        volume->config.set("extruder", extruder);
+    };
+    struct Run { int begin, end, extruder; bool operator==(const Run& o) const { return begin == o.begin && end == o.end && extruder == o.extruder; } };
+    for (std::size_t r = 0; r < rows.size(); ++r) {
+        const std::string text = labels[r], name = "Stack " + text;
+        const double y = 70. + double(r) * pitch;
+        const double color_top = rows[r].color_layers * layer;
+        // White text pixels. The face is looked at from below, so the label is mirrored in X.
+        const int text_columns = int(text.size()) * 6 - 1, text_start = (columns - text_columns) / 2, text_row0 = (pixel_rows - text_rows) / 2;
+        std::vector<std::vector<bool>> is_text(std::size_t(pixel_rows), std::vector<bool>(std::size_t(columns), false));
+        for (std::size_t k = 0; k < text.size(); ++k)
+            for (int gr = 0; gr < text_rows; ++gr)
+                for (int gc = 0; gc < 5; ++gc)
+                    if (font.at(text[k])[std::size_t(gr)][gc] == '#') {
+                        const int read_column = int(k) * 6 + gc;
+                        is_text[std::size_t(text_row0 + (text_rows - 1 - gr))][std::size_t(text_start + text_columns - 1 - read_column)] = true;
+                    }
+        // Face background: orange on the left half, blue on the right half, white where the text is.
+        // Identical neighbouring pixel rows are merged so no volumes overlap and the count stays small.
+        std::vector<std::vector<Run>> patterns;
+        for (int ry = 0; ry < pixel_rows; ++ry) {
+            std::vector<Run> runs;
+            for (int col = 0; col < columns;) {
+                const auto extruder_at = [&](int c) { return is_text[std::size_t(ry)][std::size_t(c)] ? white : (c < columns / 2 ? orange : blue); };
+                int end = col;
+                while (end < columns && extruder_at(end) == extruder_at(col)) ++end;
+                runs.push_back({col, end, extruder_at(col)});
+                col = end;
+            }
+            patterns.push_back(std::move(runs));
+        }
+        for (int ry = 0; ry < pixel_rows;) {
+            int end = ry;
+            while (end < pixel_rows && patterns[std::size_t(end)] == patterns[std::size_t(ry)]) ++end;
+            for (const auto& run : patterns[std::size_t(ry)])
+                add(x0 + double(run.begin) * pixel, y + double(ry) * pixel, 0., color_top,
+                    double(run.end - run.begin) * pixel, double(end - ry) * pixel, run.extruder, name + " face");
+            ry = end;
+        }
+        const double tile_width = double(columns) * pixel, tile_depth = double(pixel_rows) * pixel;
+        double z = color_top;
+        if (rows[r].white_layers > 0) {
+            const double white_top = z + rows[r].white_layers * layer;
+            add(x0, y, z, white_top, tile_width, tile_depth, white, name + " white backing");
+            z = white_top;
+        }
+        add(x0, y, z, total, tile_width, tile_depth, black, name + " black body");
+    }
+    object->add_instance();
+    object->ensure_on_bed();
+    Print print;
+    print.set_status_silent(); print.set_BBL_Printer(true); print.set_plate_index(0); print.set_plate_origin(Vec3d::Zero());
+    print.set_extruder_filament_info(presets.get_extruder_filament_info());
+    print.apply(model, config);
+    const auto validation = print.validate();
+    INFO(validation.string);
+    REQUIRE(validation.string.empty());
+    print.process();
+    const auto gcode_path = fs::temp_directory_path() / fs::unique_path("ams-swatch-%%%%-%%%%.gcode");
+    struct Cleanup { fs::path path; ~Cleanup() { boost::system::error_code ignored; fs::remove(path, ignored); } } cleanup{gcode_path};
+    GCodeProcessorResult result;
+    print.export_gcode(gcode_path.string(), &result, nullptr);
+    REQUIRE(result.pause_printing.empty());
+    std::map<unsigned, std::set<int>> by_layer;
+    for (const auto& move : result.moves) if (move.type == EMoveType::Extrude && move.layer_id > 0)
+        by_layer[move.layer_id].insert(move.extruder_id);
+    REQUIRE(by_layer.size() == 8);
+    // Layer 1 is the three face colors; black first appears behind the shortest stacks and
+    // the last layers are black only.
+    CHECK(by_layer[1] == std::set<int>({1, 2, 3}));
+    CHECK(by_layer[3].count(0) == 1);
+    CHECK(by_layer[8] == std::set<int>({0}));
+    std::string estimate;
+    {
+        std::ifstream in(gcode_path.string(), std::ios::binary);
+        std::string line;
+        while (std::getline(in, line)) if (line.find("total estimated time") != std::string::npos) { estimate = line; break; }
+    }
+    INFO(estimate);
+    CHECK_FALSE(estimate.empty());
+
+    auto& process = presets.prints.get_edited_preset().config;
+    for (const auto& key : config.keys())
+        if (process.has(key)) process.set_key_value(key, config.option(key)->clone());
+    presets.prints.update_dirty();
+    const auto native_export = presets.full_config();
+    config.set_key_value("different_settings_to_system", native_export.option("different_settings_to_system")->clone());
+    PlateData plate;
+    plate.plate_index = 0; plate.objects_and_instances.emplace_back(0, 0);
+    plate.plate_name = "Color layer swatch plate";
+    const auto project = gcode_path.string() + ".3mf";
+    struct Archive { std::string path; ~Archive() { boost::system::error_code ignored; fs::remove(path, ignored); } } archive{project};
+    StoreParams params;
+    params.path = project.c_str(); params.model = &model; params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    REQUIRE(store_bbs_3mf(params));
+    Model loaded_model;
+    DynamicPrintConfig loaded_config;
+    ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
+    PlateDataPtrs plates;
+    std::vector<Preset*> embedded;
+    bool is_bambu = false;
+    Semver version;
+    REQUIRE(load_bbs_3mf(project.c_str(), &loaded_config, &substitutions, &loaded_model, &plates,
+        &embedded, &is_bambu, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::Silence));
+    REQUIRE(loaded_model.objects.size() == 1);
+    CHECK(loaded_model.objects.front()->volumes.size() == object->volumes.size());
+    release_PlateData_list(plates);
+    for (auto* preset : embedded) delete preset;
+    if (const char* destination = std::getenv("EXTENDED_AMS_SWATCH_OUTPUT")) {
+        const auto folder = fs::absolute(destination);
+        fs::create_directories(folder);
+        const auto output = folder / "Color layer swatch plate.3mf";
+        REQUIRE_FALSE(fs::exists(output));
+        fs::copy_file(project, output);
+        std::ofstream((folder / "estimate.txt").string(), std::ios::binary) << estimate << " volumes=" << object->volumes.size() << "\n";
+    }
+}
+
+// The "White layer" feature: layers behind the colored face are recolored by one modifier volume,
+// even where parts carry their own filament, and the model, prime tower and ordering follow.
+TEST_CASE("White layer recolors the layers behind the color face", "[ExtendedAMSLite][WhiteLayer]")
+{
+    namespace fs = boost::filesystem;
+    const auto resources = fs::path(TEST_DATA_DIR).parent_path().parent_path() / "resources";
+    set_resources_dir(resources.string());
+    PresetBundle presets;
+    presets.load_vendor_configs_from_json((resources / "profiles").string(), "BBL",
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    REQUIRE(presets.printers.select_preset_by_name("Bambu Lab A1 0.2 nozzle", true, true));
+    REQUIRE(presets.prints.select_preset_by_name("0.10mm Standard @BBL A1 0.2 nozzle", true, true));
+    REQUIRE(presets.filaments.select_preset_by_name("Bambu PLA Basic @BBL A1 0.2 nozzle", true, true));
+    presets.filament_presets.assign(4, "Bambu PLA Basic @BBL A1 0.2 nozzle");
+    presets.set_num_filaments(4);
+    const std::vector<std::string> colors{"#000000", "#FEFEFE", "#F28C1D", "#4588C8"};
+    presets.project_config.set_key_value("filament_colour", new ConfigOptionStrings(colors));
+    auto config = presets.full_config();
+    config.set_key_value("curr_bed_type", new ConfigOptionEnum<BedType>(btPEI));
+    config.set_key_value("initial_layer_print_height", new ConfigOptionFloat(0.1));
+    config.set_key_value("layer_height", new ConfigOptionFloat(0.1));
+    std::vector<double> flush(16, 100.);
+    for (int i = 0; i < 4; ++i) flush[i * 4 + i] = 0.;
+    config.set_key_value("flush_volumes_matrix", new ConfigOptionFloats(flush));
+
+    // A black 1.2 mm body whose 0.4 mm face is orange | blue, like a generated keychain.
+    Model model;
+    auto* object = model.add_object();
+    object->name = "Face";
+    const auto add = [&](double x, double w, double h, int extruder) {
+        auto mesh = make_cube(w, 20., h);
+        mesh.translate(float(x), 0.f, 0.f);
+        auto* volume = object->add_volume(std::move(mesh));
+        volume->config.set("extruder", extruder);
+    };
+    add(100., 30., 1.2, 1);
+    add(100., 15., 0.4, 3);
+    add(115., 15., 0.4, 4);
+    object->add_instance();
+    object->ensure_on_bed();
+
+    WhiteLayer::Options options;
+    options.color_layers = 3; options.white_layers = 1; options.filament = 2;
+    const auto plan = WhiteLayer::plan(*object, 0, config, options);
+    CHECK(plan.total_layers == 12);
+    CHECK(plan.bottom_z == Approx(0.3).margin(0.001));
+    CHECK(plan.top_z == Approx(0.4).margin(0.001));
+    options.color_layers = 12;
+    CHECK_THROWS(WhiteLayer::plan(*object, 0, config, options)); // no room left for a white layer
+    WhiteLayer::apply(*object, 0, plan);
+    REQUIRE(WhiteLayer::has_white_layer(*object));
+    std::size_t modifiers = 0;
+    for (const auto* v : object->volumes) if (v->is_modifier()) { ++modifiers; CHECK(WhiteLayer::options_from_volume(*v).filament == 2); }
+    CHECK(modifiers == 1);
+
+    Print print;
+    print.set_status_silent(); print.set_BBL_Printer(true); print.set_plate_index(0); print.set_plate_origin(Vec3d::Zero());
+    print.set_extruder_filament_info(presets.get_extruder_filament_info());
+    print.apply(model, config);
+    const auto validation = print.validate();
+    INFO(validation.string);
+    REQUIRE(validation.string.empty());
+    print.process();
+    const auto gcode_path = fs::temp_directory_path() / fs::unique_path("ams-white-%%%%-%%%%.gcode");
+    struct Cleanup { fs::path path; ~Cleanup() { boost::system::error_code ignored; fs::remove(path, ignored); } } cleanup{gcode_path};
+    GCodeProcessorResult result;
+    print.export_gcode(gcode_path.string(), &result, nullptr);
+    // The prime tower may keep the previous tool for a moment at a layer start, so only the model's
+    // own extrusions say which filament each layer of the part uses.
+    std::map<unsigned, std::set<int>> by_layer;
+    for (const auto& move : result.moves) if (move.type == EMoveType::Extrude && move.layer_id > 0 && move.extrusion_role != erWipeTower)
+        by_layer[move.layer_id].insert(move.extruder_id);
+    REQUIRE(by_layer.size() == 12);
+    for (unsigned layer = 1; layer <= 3; ++layer) CHECK(by_layer[layer] == std::set<int>({2, 3})); // orange and blue
+    CHECK(by_layer[4] == std::set<int>({1})); // white only, over the whole footprint
+    for (unsigned layer = 5; layer <= 12; ++layer) CHECK(by_layer[layer] == std::set<int>({0})); // black body
+
+    WhiteLayer::remove(*object);
+    CHECK_FALSE(WhiteLayer::has_white_layer(*object));
+    CHECK(object->volumes.size() == 3);
 }

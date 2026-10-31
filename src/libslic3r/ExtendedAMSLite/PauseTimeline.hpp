@@ -172,12 +172,32 @@ inline bool observe_pause_progress(PauseProgress& progress, const ExecutionSpec&
     }
     return false;
 }
+// The A1 reports this code for every pause command in the print file (M400 U1), which is
+// exactly what a planned swap or magnet stop is. It is not a printer fault.
+constexpr int planned_pause_error_code = 0x03008013;
+inline bool is_printer_fault(int error) { return error != 0 && error != planned_pause_error_code; }
+
+// Empty when the stop can be confirmed; otherwise a plain-language reason it cannot yet.
+inline std::string pause_completion_blocker(const PauseProgress& progress, const PauseTimeline& timeline, const ExecutionSpec& spec,
+                                            const std::string& printer, const PauseObservation& state)
+{
+    if (!matches_pause_job(spec, printer, state) || !matches_pause_run(progress, state)) return "This guide belongs to a different print.";
+    if (!state.connected || !state.ready) return "Waiting for the printer connection.";
+    if (progress.awaiting_resume) return "Already confirmed. Resume on the printer.";
+    if (progress.completed >= timeline.events.size()) return "All listed pauses are already confirmed.";
+    if (state.status != "PAUSE") return "The printer is not paused yet. This becomes available when it pauses.";
+    if (is_printer_fault(state.error)) return "The printer reports a fault (code " + std::to_string(state.error) + "). Check the printer first.";
+    const auto planned = timeline.events[progress.completed].layer;
+    if (planned == 0) return "This stop has no layer information, so it cannot be matched to the printer.";
+    if (planned != state.layer)
+        return "The printer paused at layer " + std::to_string(state.layer) + " but this stop is planned for layer " +
+               std::to_string(planned) + ". If the guide is behind, use Adjust progress.";
+    return {};
+}
 inline bool can_complete_pause(const PauseProgress& progress, const PauseTimeline& timeline, const ExecutionSpec& spec,
                                const std::string& printer, const PauseObservation& state)
 {
-    return matches_pause_job(spec, printer, state) && matches_pause_run(progress, state) && state.connected && state.ready && state.status == "PAUSE" && state.error == 0 &&
-        !progress.awaiting_resume && progress.completed < timeline.events.size() && timeline.events[progress.completed].layer > 0 &&
-        timeline.events[progress.completed].layer == state.layer;
+    return pause_completion_blocker(progress, timeline, spec, printer, state).empty();
 }
 inline bool complete_pause(PauseProgress& progress, const PauseTimeline& timeline, const ExecutionSpec& spec,
                            const std::string& printer, const PauseObservation& state)

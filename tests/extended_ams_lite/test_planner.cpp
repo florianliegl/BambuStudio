@@ -104,6 +104,17 @@ void execution_cases()
     state.connected = true; state.ready = false;
     check(!complete_pause(progress, timeline, spec, "printer-a", state), "Stale not-ready state cannot acknowledge a pause");
     state.ready = true;
+    // The A1 reports 03008013 for every pause command in the file, so a planned stop always carries it.
+    state.error = planned_pause_error_code;
+    check(!is_printer_fault(state.error) && is_printer_fault(123) && !is_printer_fault(0), "Only the pause-command code is treated as a planned pause");
+    state.status = "RUNNING";
+    check(pause_completion_blocker(progress, timeline, spec, "printer-a", state).find("not paused yet") != std::string::npos, "Running print explains why confirm is unavailable");
+    state.status = "PAUSE"; state.layer = 2;
+    check(pause_completion_blocker(progress, timeline, spec, "printer-a", state).find("layer 2") != std::string::npos, "Layer mismatch is explained with both layers");
+    state.layer = 1; state.error = 123;
+    check(pause_completion_blocker(progress, timeline, spec, "printer-a", state).find("fault") != std::string::npos, "Real printer faults are explained");
+    state.error = planned_pause_error_code;
+    check(pause_completion_blocker(progress, timeline, spec, "printer-a", state).empty(), "A planned pause with the A1 pause code can be confirmed");
     check(complete_pause(progress, timeline, spec, "printer-a", state) && progress.completed == 1 && progress.awaiting_resume, "Explicit confirmation advances exactly one pause");
     check(!complete_pause(progress, timeline, spec, "printer-a", state), "Repeated clicks at the same pause cannot advance twice");
     const auto checkpoint = serialize_pause_progress(progress, timeline.events.size());
@@ -257,6 +268,69 @@ void scenarios()
     check(html.find("<script>") == std::string::npos && html.find("&lt;script&gt;") != std::string::npos, "HTML export escapes profile names");
     check(html.find("style=\"background:#808080\"") != std::string::npos, "Invalid CSS colors fall back to gray");
     check(html.find("style=\"background:red;") == std::string::npos, "Untrusted color cannot inject CSS");
+}
+
+PurgeModel random_purge(unsigned seed, std::size_t count, double flow = 5.)
+{
+    std::mt19937 random(seed);
+    PurgeModel model;
+    model.count = count; model.flow = flow;
+    model.volume.assign(count * count, 0.);
+    for (std::size_t from = 0; from < count; ++from)
+        for (std::size_t to = 0; to < count; ++to)
+            if (from != to) model.volume[from * count + to] = 100. + double(random() % 500);
+    return model;
+}
+
+void purge_optimization()
+{
+    const std::vector<Slot> slots(4);
+    std::vector<Request> input;
+    for (unsigned layer = 1; layer <= 4; ++layer)
+        for (int id = 0; id < 8; ++id) input.push_back({id, layer, input.size(), unsigned(input.size() + 1)});
+    // A color-aware table: leaving black (0) for white (7) is very expensive, the reverse is cheap.
+    PurgeModel table = random_purge(1, 8);
+    table.volume[0 * 8 + 7] = 600.; table.volume[7 * 8 + 0] = 100.;
+    for (unsigned seed = 1; seed <= 12; ++seed) {
+        const auto purge = random_purge(seed, 8);
+        const auto result = optimize_batches(input, 8, slots, {}, purge);
+        check(result.baseline.schedule.stops.size() == 4, "Baseline for eight colors over four layers is four visits");
+        check(result.score.visits <= result.baseline_score.visits, "Optimization never adds visits");
+        check(result.score.purge_mm3 <= result.baseline_score.purge_mm3 + 1e-9, "Optimization never adds purge at equal visits");
+        verify_batches(slots, result.plan);
+        check(std::abs(result.score.purge_mm3 - purge_volume(result.plan.requests, purge)) < 1e-9, "Score matches the plan's own purge");
+        if (result.faster) {
+            check(result.faster->schedule.stops.size() == result.plan.schedule.stops.size() + 1, "A suggestion has exactly one more visit");
+            check(result.score.purge_seconds - result.faster_score.purge_seconds >= 600., "A suggestion must save at least ten minutes");
+            verify_batches(slots, *result.faster);
+        }
+        // The user's first-layer order wins over any purge saving.
+        const std::vector<int> order{3, 1, 0, 2, 7, 6, 5, 4};
+        const auto pinned = optimize_batches(input, 8, slots, order, purge);
+        check(pinned.plan.layers.front().filaments == order, "Manual first-layer order is never reordered for purge");
+        const auto partial = optimize_batches(input, 8, slots, {7, 0}, purge);
+        check(partial.plan.layers.front().filaments[0] == 7 && partial.plan.layers.front().filaments[1] == 0, "A manual prefix keeps its first colors");
+        check(pinned.score.visits <= pinned.baseline_score.visits, "Pinned plans do not add visits either");
+        verify_batches(slots, pinned.plan);
+    }
+    const auto tabled = optimize_batches(input, 8, slots, {}, table);
+    check(tabled.score.purge_mm3 <= tabled.baseline_score.purge_mm3, "A color-aware table is never worse than the standard order");
+    // Without a usable table the result is exactly the standard plan.
+    const auto none = optimize_batches(input, 8, slots, {}, PurgeModel{});
+    check(none.plan.schedule.stops.size() == none.baseline.schedule.stops.size() && !none.faster, "No purge table keeps the standard plan");
+    // Locks and fixed slots survive optimization.
+    const auto locked = optimize_batches(input, 8, {{0, true}, {7, false}, {-1, false}, {-1, false}}, {}, random_purge(5, 8));
+    for (const auto& stop : locked.plan.schedule.stops)
+        for (const auto& change : stop.replacements) check(change.slot != 0, "Optimized plan never replaces a locked spool");
+    // A small suggestion threshold can only ever add exactly one visit.
+    for (unsigned seed = 20; seed < 28; ++seed) {
+        const auto eager = optimize_batches(input, 8, slots, {}, random_purge(seed, 8, 1.), 1.);
+        if (eager.faster) check(eager.faster->schedule.stops.size() == eager.plan.schedule.stops.size() + 1, "Eager suggestions stay one visit away");
+    }
+    // Hand-supplied layer orders must cover exactly each layer's colors.
+    const std::vector<std::vector<int>> wrong{{0}};
+    rejects([&] { plan_batches_custom(input, 8, slots, {}, true, nullptr, &wrong); });
+    rejects([&] { plan_batches_custom(input, 8, slots, {}, false, nullptr, &wrong); });
 }
 
 void batch_scenarios()
@@ -534,6 +608,7 @@ int main()
         trace_contract();
         exhaustive_and_random();
         batch_scenarios();
+        purge_optimization();
         batch_exhaustive_and_random();
         std::cout << "Passed " << checks << " checks, including 20,480 cache and 4,096 batch optimum comparisons, plus 1,300 randomized replays.\n";
         return 0;

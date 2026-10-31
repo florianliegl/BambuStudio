@@ -225,6 +225,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ExtendedAMSLiteDialog.hpp
     GUI/MagnetPocketDialog.cpp
     GUI/MagnetPocketDialog.hpp
+    GUI/WhiteLayerDialog.cpp
+    GUI/WhiteLayerDialog.hpp
     GUI/GUI_Preview.hpp
     GUI/GUI_App.cpp
     GUI/GUI_App.hpp

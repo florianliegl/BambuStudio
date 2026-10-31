@@ -27,6 +27,11 @@ private:
     std::vector<ExtendedAMSLite::Request> m_requests;
     std::vector<double> m_magnet_pauses;
     ExtendedAMSLite::BatchPlan m_plan;
+    ExtendedAMSLite::PurgeModel m_purge;
+    ExtendedAMSLite::OptimizedBatches m_opt;
+    bool m_optimized = false;
+    wxStaticText* m_saving = nullptr;
+    wxCheckBox* m_faster = nullptr;
     std::array<Card, 4> m_loading, m_changes;
     std::array<wxChoice*, 4> m_initial;
     std::array<wxCheckBox*, 4> m_locked;

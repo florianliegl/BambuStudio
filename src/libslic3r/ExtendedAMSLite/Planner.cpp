@@ -3,8 +3,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <numeric>
 #include <iomanip>
 #include <map>
 #include <set>
@@ -134,7 +137,17 @@ BatchPlan plan_batches(const std::vector<Request>& input, std::size_t count,
                        const std::vector<Slot>& slots, const std::vector<int>& first_order,
                        bool reorder_layers)
 {
+    return plan_batches_custom(input, count, slots, first_order, reorder_layers, nullptr, nullptr);
+}
+
+BatchPlan plan_batches_custom(const std::vector<Request>& input, std::size_t count,
+                              const std::vector<Slot>& slots, const std::vector<int>& first_order,
+                              bool reorder_layers, const std::vector<std::vector<int>>* custom_banks,
+                              const std::vector<std::vector<int>>* custom_orders)
+{
     validate_inputs(input, count, slots);
+    if ((custom_banks || custom_orders) && !reorder_layers)
+        throw std::invalid_argument("Custom banks and layer orders require layer reordering.");
     BatchPlan result;
     result.reordered = reorder_layers;
     result.filament_slots.assign(count, -1);
@@ -170,9 +183,25 @@ BatchPlan plan_batches(const std::vector<Request>& input, std::size_t count,
     for (int id : palette) if (!locked_filaments.count(id)) mutable_colors.push_back(id);
     if (free_slots.empty() && !mutable_colors.empty())
         throw std::runtime_error("All slots are locked. Unlock a slot for the remaining colors.");
-    for (std::size_t offset = 0; offset < mutable_colors.size(); offset += free_slots.size()) {
-        const std::size_t end = std::min(offset + free_slots.size(), mutable_colors.size());
-        std::vector<int> bank(mutable_colors.begin() + offset, mutable_colors.begin() + end);
+    std::vector<std::vector<int>> chunks;
+    if (custom_banks) {
+        std::vector<int> flat, expected = mutable_colors;
+        for (const auto& bank : *custom_banks) {
+            if (bank.empty() || bank.size() > free_slots.size())
+                throw std::invalid_argument("A custom bank must hold between one and four colors.");
+            flat.insert(flat.end(), bank.begin(), bank.end());
+        }
+        std::sort(flat.begin(), flat.end());
+        std::sort(expected.begin(), expected.end());
+        if (flat != expected) throw std::invalid_argument("Custom banks must cover exactly the colors that can be swapped.");
+        chunks = *custom_banks;
+    } else {
+        for (std::size_t offset = 0; offset < mutable_colors.size(); offset += free_slots.size()) {
+            const std::size_t end = std::min(offset + free_slots.size(), mutable_colors.size());
+            chunks.emplace_back(mutable_colors.begin() + offset, mutable_colors.begin() + end);
+        }
+    }
+    for (const auto& bank : chunks) {
         std::set<int> taken;
         for (int id : bank) if (forced[id] >= 0) {
             result.filament_slots[id] = forced[id];
@@ -187,7 +216,7 @@ BatchPlan plan_batches(const std::vector<Request>& input, std::size_t count,
             }
             bank_of[id] = static_cast<int>(result.banks.size());
         }
-        result.banks.push_back(std::move(bank));
+        result.banks.push_back(bank);
     }
 
     if (!reorder_layers) result.requests = input;
@@ -213,7 +242,14 @@ BatchPlan plan_batches(const std::vector<Request>& input, std::size_t count,
             const auto append = [&](int id) {
                 if (required_here(id) && std::find(ordered.begin(), ordered.end(), id) == ordered.end()) ordered.push_back(id);
             };
-            if (l == 0 && !first_order.empty()) {
+            if (custom_orders) {
+                if (l >= custom_orders->size()) throw std::invalid_argument("A custom layer order is missing.");
+                auto given = (*custom_orders)[l], expected = required;
+                std::sort(given.begin(), given.end());
+                std::sort(expected.begin(), expected.end());
+                if (given != expected) throw std::invalid_argument("A custom layer order must hold exactly the colors of its layer.");
+                ordered = (*custom_orders)[l];
+            } else if (l == 0 && !first_order.empty()) {
                 for (int id : first_order) append(id);
                 for (int id : palette) append(id);
             } else {
@@ -316,6 +352,251 @@ void verify_batches(const std::vector<Slot>& slots, const BatchPlan& result)
         std::set<int> unique(layer.filaments.begin(), layer.filaments.end());
         if (unique.size() != layer.filaments.size()) throw std::invalid_argument("A layer repeats a virtual filament.");
     }
+}
+
+double PurgeModel::at(int from, int to) const
+{
+    if (from < 0 || to < 0 || from == to || std::size_t(from) >= count || std::size_t(to) >= count || volume.size() != count * count)
+        return 0.;
+    return volume[std::size_t(from) * count + std::size_t(to)];
+}
+
+double purge_volume(const std::vector<Request>& requests, const PurgeModel& model)
+{
+    double total = 0.;
+    for (std::size_t i = 1; i < requests.size(); ++i) total += model.at(requests[i - 1].filament, requests[i].filament);
+    return total;
+}
+
+PlanScore score_plan(const BatchPlan& plan, const PurgeModel& model)
+{
+    PlanScore score;
+    score.visits = plan.schedule.stops.size();
+    score.replacements = plan.spool_replacements;
+    score.color_changes = plan.color_changes;
+    score.purge_mm3 = purge_volume(plan.requests, model);
+    score.purge_seconds = model.flow > 0. ? score.purge_mm3 / model.flow : 0.;
+    return score;
+}
+
+namespace {
+using Orders = std::vector<std::vector<int>>;
+using Clock = std::chrono::steady_clock;
+
+struct Eval { std::size_t visits = 0, replacements = 0; double purge = 0.; };
+
+// Replays the batch scheduler on the printing order alone. It mirrors the scheduling loop in
+// plan_batches_custom so thousands of candidate orders can be compared cheaply.
+Eval evaluate_orders(const Orders& orders, const std::vector<int>& filament_slots, const std::vector<Slot>& slots, const PurgeModel& model)
+{
+    std::vector<int> ids;
+    for (const auto& layer : orders)
+        for (int id : layer) if (ids.empty() || ids.back() != id) ids.push_back(id);
+    std::vector<int> loaded;
+    for (const Slot& slot : slots) loaded.push_back(slot.filament);
+    for (std::size_t s = 0; s < loaded.size(); ++s) if (loaded[s] < 0)
+        for (int id : ids) if (filament_slots[std::size_t(id)] == int(s)) { loaded[s] = id; break; }
+    Eval eval;
+    std::vector<int> upcoming(slots.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const int id = ids[i];
+        if (loaded[std::size_t(filament_slots[std::size_t(id)])] != id) {
+            ++eval.visits;
+            std::fill(upcoming.begin(), upcoming.end(), -1);
+            for (std::size_t j = i; j < ids.size(); ++j) {
+                const std::size_t physical = std::size_t(filament_slots[std::size_t(ids[j])]);
+                if (upcoming[physical] >= 0 && upcoming[physical] != ids[j]) break;
+                upcoming[physical] = ids[j];
+            }
+            for (std::size_t physical = 0; physical < slots.size(); ++physical)
+                if (upcoming[physical] >= 0 && loaded[physical] != upcoming[physical]) {
+                    loaded[physical] = upcoming[physical];
+                    ++eval.replacements;
+                }
+        }
+        if (i > 0) eval.purge += model.at(ids[i - 1], id);
+    }
+    return eval;
+}
+
+// Visits beyond `cap` are the first thing to avoid, then purge, then visits.
+bool better(const Eval& a, const Eval& b, std::size_t cap)
+{
+    const std::size_t over_a = a.visits > cap ? a.visits - cap : 0, over_b = b.visits > cap ? b.visits - cap : 0;
+    if (over_a != over_b) return over_a < over_b;
+    if (std::abs(a.purge - b.purge) > 1e-6) return a.purge < b.purge;
+    if (a.visits != b.visits) return a.visits < b.visits;
+    return a.replacements < b.replacements;
+}
+
+// Every ordering of `groups` (as whole groups) with every ordering inside each group.
+template<class F>
+void for_each_grouped_order(std::vector<std::vector<int>> groups, F&& visit)
+{
+    for (auto& g : groups) std::sort(g.begin(), g.end());
+    std::vector<std::size_t> sequence(groups.size());
+    std::iota(sequence.begin(), sequence.end(), std::size_t(0));
+    std::vector<int> current;
+    std::function<void(std::size_t)> expand = [&](std::size_t position) {
+        if (position == sequence.size()) { visit(current); return; }
+        auto group = groups[sequence[position]];
+        do {
+            const auto size = current.size();
+            current.insert(current.end(), group.begin(), group.end());
+            expand(position + 1);
+            current.resize(size);
+        } while (std::next_permutation(group.begin(), group.end()));
+    };
+    do expand(0); while (std::next_permutation(sequence.begin(), sequence.end()));
+}
+
+std::size_t factorial(std::size_t n) { std::size_t r = 1; for (std::size_t i = 2; i <= n; ++i) r *= i; return r; }
+
+// Coordinate descent over the per-layer color order, keeping the bank partition fixed.
+Orders refine_orders(Orders orders, const BatchPlan& base, const std::vector<Slot>& slots, const std::vector<int>& first_order,
+                     const PurgeModel& model, std::size_t cap, Clock::time_point deadline)
+{
+    std::vector<int> bank_of(base.filament_slots.size(), -1);
+    for (std::size_t b = 0; b < base.banks.size(); ++b) for (int id : base.banks[b]) bank_of[std::size_t(id)] = int(b);
+    auto best = evaluate_orders(orders, base.filament_slots, slots, model);
+    for (int pass = 0; pass < 3; ++pass) {
+        bool improved = false;
+        for (std::size_t l = 0; l < orders.size() && Clock::now() < deadline; ++l) {
+            // A layer-1 color the user ordered by hand keeps its place and position.
+            std::vector<int> prefix, rest;
+            if (l == 0) for (int id : first_order)
+                if (std::find(orders[l].begin(), orders[l].end(), id) != orders[l].end()) prefix.push_back(id);
+            for (int id : orders[l]) if (std::find(prefix.begin(), prefix.end(), id) == prefix.end()) rest.push_back(id);
+            if (rest.size() < 2) continue;
+            std::map<int, std::vector<int>> by_bank;
+            std::vector<std::vector<int>> groups;
+            for (int id : rest) {
+                if (bank_of[std::size_t(id)] < 0) groups.push_back({id});
+                else by_bank[bank_of[std::size_t(id)]].push_back(id);
+            }
+            for (auto& entry : by_bank) groups.push_back(entry.second);
+            std::size_t combos = factorial(groups.size());
+            for (const auto& g : groups) combos *= factorial(g.size());
+            if (combos > 20000) continue;
+            Orders trial = orders;
+            std::vector<int> chosen = orders[l];
+            for_each_grouped_order(groups, [&](const std::vector<int>& candidate) {
+                trial[l] = prefix;
+                trial[l].insert(trial[l].end(), candidate.begin(), candidate.end());
+                const auto eval = evaluate_orders(trial, base.filament_slots, slots, model);
+                if (better(eval, best, cap)) { best = eval; chosen = trial[l]; improved = true; }
+            });
+            orders[l] = chosen;
+        }
+        if (!improved || Clock::now() >= deadline) break;
+    }
+    return orders;
+}
+
+// Splits `colors` (ascending) into groups of the given sizes. Groups of equal size are
+// unordered, so each partition is produced once.
+void for_each_partition(const std::vector<int>& colors, const std::vector<std::size_t>& sizes, std::size_t limit,
+                        const std::function<void(const Orders&)>& visit)
+{
+    Orders current;
+    std::size_t produced = 0;
+    std::function<void(const std::vector<int>&, std::size_t)> split = [&](const std::vector<int>& remaining, std::size_t k) {
+        if (produced >= limit) return;
+        if (k == sizes.size()) { ++produced; visit(current); return; }
+        const std::size_t n = sizes[k];
+        if (n > remaining.size()) return;
+        std::vector<bool> mask(remaining.size(), false);
+        std::fill(mask.begin(), mask.begin() + std::ptrdiff_t(n), true);
+        do {
+            std::vector<int> group, left;
+            for (std::size_t i = 0; i < remaining.size(); ++i) (mask[i] ? group : left).push_back(remaining[i]);
+            if (k > 0 && sizes[k] == sizes[k - 1] && group.front() < current.back().front()) continue;
+            current.push_back(group);
+            split(left, k + 1);
+            current.pop_back();
+            if (produced >= limit) return;
+        } while (std::prev_permutation(mask.begin(), mask.end()));
+    };
+    split(colors, 0);
+}
+} // namespace
+
+OptimizedBatches optimize_batches(const std::vector<Request>& input, std::size_t count, const std::vector<Slot>& slots,
+                                  const std::vector<int>& first_order, const PurgeModel& purge, double suggest_seconds)
+{
+    OptimizedBatches out;
+    out.baseline = plan_batches(input, count, slots, first_order, true);
+    out.baseline_score = score_plan(out.baseline, purge);
+    out.plan = out.baseline;
+    out.score = out.baseline_score;
+    if (!purge.valid() || purge.count < count) return out;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(2500);
+
+    std::vector<int> colors;
+    std::vector<std::size_t> sizes;
+    for (const auto& bank : out.baseline.banks) { colors.insert(colors.end(), bank.begin(), bank.end()); sizes.push_back(bank.size()); }
+    std::sort(colors.begin(), colors.end());
+    // Larger banks first keeps the partition pattern canonical.
+    std::stable_sort(sizes.begin(), sizes.end(), std::greater<std::size_t>());
+
+    struct Candidate { Orders banks; BatchPlan plan; Eval eval; };
+    std::vector<Candidate> candidates;
+    const auto consider = [&](const Orders& banks) {
+        try {
+            auto plan = plan_batches_custom(input, count, slots, first_order, true, &banks, nullptr);
+            Orders orders;
+            for (const auto& layer : plan.layers) orders.push_back(layer.filaments);
+            auto eval = evaluate_orders(orders, plan.filament_slots, slots, purge);
+            candidates.push_back({banks, std::move(plan), eval});
+        } catch (const std::exception&) { /* conflicting slot overrides: this partition is not usable */ }
+    };
+    if (!colors.empty()) for_each_partition(colors, sizes, 600, [&](const Orders& banks) { if (Clock::now() < deadline) consider(banks); });
+    if (candidates.empty()) return out;
+
+    std::size_t best_visits = out.score.visits;
+    for (const auto& c : candidates) best_visits = std::min(best_visits, c.eval.visits);
+
+    struct Result { BatchPlan plan; PlanScore score; };
+    std::vector<Result> results;
+    results.push_back({out.baseline, out.baseline_score});
+    for (std::size_t cap : {best_visits, best_visits + 1}) {
+        std::vector<const Candidate*> seeds;
+        for (const auto& c : candidates) seeds.push_back(&c);
+        std::stable_sort(seeds.begin(), seeds.end(), [&](const Candidate* a, const Candidate* b) { return better(a->eval, b->eval, cap); });
+        for (std::size_t i = 0; i < seeds.size() && i < 4 && Clock::now() < deadline; ++i) {
+            Orders orders;
+            for (const auto& layer : seeds[i]->plan.layers) orders.push_back(layer.filaments);
+            orders = refine_orders(std::move(orders), seeds[i]->plan, slots, first_order, purge, cap, deadline);
+            try {
+                auto plan = plan_batches_custom(input, count, slots, first_order, true, &seeds[i]->banks, &orders);
+                auto score = score_plan(plan, purge);
+                results.push_back({std::move(plan), score});
+            } catch (const std::exception&) { /* never offer a plan that fails verification */ }
+        }
+    }
+
+    const auto lexicographic = [](const PlanScore& a, const PlanScore& b) {
+        if (a.visits != b.visits) return a.visits < b.visits;
+        return a.purge_mm3 < b.purge_mm3 - 1e-6;
+    };
+    const Result* best = &results.front();
+    for (const auto& r : results) if (lexicographic(r.score, best->score)) best = &r;
+    // A user-chosen first-layer order is a hard constraint, whatever the optimizer prefers.
+    const auto keeps_first_order = [&](const BatchPlan& plan) {
+        if (first_order.empty() || plan.layers.empty()) return true;
+        std::vector<int> wanted;
+        for (int id : first_order) if (std::find(plan.layers.front().filaments.begin(), plan.layers.front().filaments.end(), id) != plan.layers.front().filaments.end()) wanted.push_back(id);
+        return std::equal(wanted.begin(), wanted.end(), plan.layers.front().filaments.begin());
+    };
+    if (keeps_first_order(best->plan)) { out.plan = best->plan; out.score = best->score; }
+
+    const Result* faster = nullptr;
+    for (const auto& r : results)
+        if (r.score.visits == out.score.visits + 1 && keeps_first_order(r.plan) &&
+            out.score.purge_seconds - r.score.purge_seconds >= suggest_seconds &&
+            (!faster || r.score.purge_mm3 < faster->score.purge_mm3)) faster = &r;
+    if (faster) { out.faster = faster->plan; out.faster_score = faster->score; }
+    return out;
 }
 
 std::vector<LayerOrder> complete_layer_orders(const BatchPlan& result)

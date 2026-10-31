@@ -25,6 +25,7 @@ class ExtendedAMSPauseOverview final : public wxPanel {
     std::string m_target, m_key, m_id, m_run;
     boost::filesystem::path m_folder;
     bool m_saved_progress = false;
+    bool m_was_online = true;
     wxString m_render_title, m_render_detail;
 
     void relayout()
@@ -105,14 +106,15 @@ class ExtendedAMSPauseOverview final : public wxPanel {
         if (!m_spec) return;
         const bool online = m_state.connected && m_state.ready;
         const bool active = m_state.status == "RUNNING" || m_state.status == "PAUSE";
-        m_show->Enable(online && !m_timeline.events.empty()); m_adjust->Enable(online && active);
+        // The saved guide is static, so it can be read while the connection is down; only confirming needs a live printer.
+        m_show->Enable(!m_timeline.events.empty()); m_adjust->Enable(online && active);
         m_show->SetLabel(m_progress.awaiting_resume ? "Show completed pause" :
             (m_state.status == "PAUSE" ? "Show what to change" : "Show instructions"));
         wxString title = "Next unconfirmed pause";
         wxString text;
         if (!online) title = "Pause overview | Printer disconnected";
         else if (!active) title = "Pause overview | Print is not running";
-        else if (m_state.error) title = "Printer error | Check printer first";
+        else if (PauseAMS::is_printer_fault(m_state.error)) title = "Printer error | Check printer first";
         else if (m_progress.awaiting_resume) title = "Pause marked complete | Resume on the printer";
         else if (m_state.status == "PAUSE") title = "Printer paused | Check the planned stop below";
         if (m_progress.completed < m_timeline.events.size()) {
@@ -160,6 +162,20 @@ class ExtendedAMSPauseOverview final : public wxPanel {
                 for (const auto& change : spec.plan.schedule.stops[i].replacements) loaded[change.slot] = change.insert;
             auto* grid = new wxGridSizer(2, FromDIP(10), FromDIP(10));
             const auto& stop = spec.plan.schedule.stops[event.visit];
+            // One plain line first: which slots change and which stay, so no card has to be read to know.
+            wxString replace_slots, keep_slots;
+            for (std::size_t slot = 0; slot < loaded.size(); ++slot) {
+                const bool replaced = std::any_of(stop.replacements.begin(), stop.replacements.end(),
+                    [slot](const auto& r) { return r.slot == slot; });
+                auto& list = replaced ? replace_slots : keep_slots;
+                list += (list.empty() ? "" : ", ") + wxString::Format("A%d", int(slot + 1));
+            }
+            auto* summary = new wxStaticText(&dialog, wxID_ANY, replace_slots.empty() ?
+                wxString("No spool needs changing at this pause. Keep all four as they are.") :
+                wxString::Format("Replace %d of %d: %s      Keep as is: %s", int(stop.replacements.size()), int(loaded.size()),
+                                 replace_slots, keep_slots.empty() ? wxString("none (all four change)") : keep_slots));
+            summary->SetFont(summary->GetFont().Bold());
+            root->Add(summary, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(14));
             auto filament = [&](int id) {
                 if (id < 0) return wxString("Empty");
                 const auto& f = spec.filaments.at(std::size_t(id));
@@ -181,15 +197,19 @@ class ExtendedAMSPauseOverview final : public wxPanel {
                 box->Add(swatch, 0, wxEXPAND | wxALL, FromDIP(10));
                 auto* name = new wxStaticText(card, wxID_ANY, wxString::Format("Slot A%d", int(slot + 1)));
                 name->SetFont(name->GetFont().Bold()); box->Add(name, 0, wxLEFT | wxRIGHT, FromDIP(10));
-                wxString text = replace ? "Remove: " + filament(change->remove) + "\nInsert: " + filament(inserted) :
-                    "Keep loaded: " + filament(inserted);
+                auto* verdict = new wxStaticText(card, wxID_ANY, replace ? "REPLACE this spool" : "KEEP - do not touch");
+                verdict->SetFont(verdict->GetFont().Bold().Larger());
+                verdict->SetForegroundColour(replace ? wxColour(210, 80, 20) : wxColour(40, 150, 70));
+                box->Add(verdict, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
+                wxString text = replace ? "Take out: " + filament(change->remove) + "\nPut in: " + filament(inserted) :
+                    "Already loaded, leave it: " + filament(inserted);
                 if (inserted >= 0) text += "\n" + wxString::FromUTF8(spec.filaments[inserted].color);
                 auto* label = new wxStaticText(card, wxID_ANY, text); label->Wrap(FromDIP(265));
                 box->Add(label, 1, wxEXPAND | wxALL, FromDIP(10)); card->SetSizer(box); grid->Add(card, 1, wxEXPAND);
             }
             root->Add(grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(14));
             auto* text = new wxStaticText(&dialog, wxID_ANY,
-                "At the planned swap pause the active filament is unloaded. Replace the slots marked Insert,\nfeed each to the AMS inlet, then resume on the printer. Keep slots marked Keep loaded unchanged.");
+                "The printer has unloaded the active filament. Swap only the slots marked REPLACE and feed each new spool\nto the AMS inlet. Leave the slots marked KEEP alone, then resume on the printer.");
             text->Wrap(FromDIP(650)); root->Add(text, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(14));
         }
         auto* note = new wxStaticText(&dialog, wxID_ANY,
@@ -197,8 +217,15 @@ class ExtendedAMSPauseOverview final : public wxPanel {
         note->Wrap(FromDIP(650)); root->Add(note, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(14));
         auto* buttons = new wxBoxSizer(wxHORIZONTAL);
         auto* done = new wxButton(&dialog, wxID_OK, "Mark this pause completed");
-        done->Enable(index == completed && PauseAMS::can_complete_pause(m_progress, m_timeline, spec, m_target, current_observation()));
+        // A greyed button always says why, instead of silently refusing.
+        const auto blocker = index != completed ? std::string("This is not the next unconfirmed stop.") :
+            PauseAMS::pause_completion_blocker(m_progress, m_timeline, spec, m_target, current_observation());
+        done->Enable(blocker.empty());
         buttons->Add(done, 0, wxRIGHT, FromDIP(12));
+        if (!blocker.empty()) {
+            auto* why = new wxStaticText(&dialog, wxID_ANY, wxString::FromUTF8(blocker)); why->Wrap(FromDIP(420));
+            buttons->Add(why, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+        }
         auto* close = new wxButton(&dialog, wxID_CANCEL, "Close"); close->SetDefault(); buttons->Add(close);
         root->Add(buttons, 0, wxALIGN_RIGHT | wxALL, FromDIP(14)); dialog.SetSizerAndFit(root);
         wxGetApp().UpdateDarkUI(&dialog); dialog.CenterOnParent();
@@ -247,6 +274,17 @@ public:
     void update(MachineObject* obj)
     {
         m_state = observation(obj);
+        // Leave a trace when the status link drops or returns, so a "no connection" moment in the
+        // middle of a print can be matched to a time in the log. Nothing identifying is written.
+        if (obj) {
+            const bool online = m_state.connected && m_state.ready;
+            if (online != m_was_online) {
+                BOOST_LOG_TRIVIAL(info) << "Extended AMS Lite: printer status link " << (online ? "restored" : "lost")
+                    << " (connected=" << m_state.connected << ", info ready=" << m_state.ready
+                    << ", status=" << m_state.status << ", layer=" << m_state.layer << ")";
+                m_was_online = online;
+            }
+        }
         const auto id = PauseAMS::pause_job_id(m_state.job_name);
         if (id.empty()) { set_visible(false); return; }
         try {
